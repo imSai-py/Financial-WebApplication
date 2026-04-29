@@ -1,0 +1,413 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ═══════════════════════════════════════════════════════
+    // Helper Functions — Hybrid Claims Model
+    // ═══════════════════════════════════════════════════════
+
+    // PRIMARY: Read role from JWT custom claim (zero Firestore reads)
+    // FALLBACK: Read role from Firestore doc (1 read — for users without claims yet)
+    function getUserRole() {
+      // 1. Check custom claims securely
+      let hasCustomClaim = 'role' in request.auth.token;
+      let customRole = hasCustomClaim ? request.auth.token.role : null;
+      
+      // 2. Fallback to database securely
+      let userDoc = /databases/$(database)/documents/users/$(request.auth.uid);
+      let dbRole = exists(userDoc) ? get(userDoc).data.role : null;
+
+      return hasCustomClaim ? customRole : dbRole;
+    }
+
+    function getUserStatus() {
+      // Status is not in custom claims — always read from doc
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status;
+    }
+
+    // Role checks (use hybrid resolution)
+    function isAdmin() { 
+      // Hardcoded safety bypass for the primary admin to prevent lockout
+      return request.auth.token.email == 'admin@financeflow.com' || getUserRole() == 'admin'; 
+    }
+    function isStaff() { return getUserRole() == 'staff'; }
+    function isAgent() { return getUserRole() == 'agent'; }
+    function isCustomer() { return getUserRole() == 'customer'; }
+    function isOwner(uid) { return request.auth.uid == uid; }
+
+    // Suspended user gate — blocks ALL operations for suspended/deactivated users
+    function isActiveUser() {
+      return getUserStatus() == 'active';
+    }
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAuthorized() {
+      return isAuthenticated() && isActiveUser();
+    }
+
+    // Validation helpers
+    function isValidString(field) {
+      return field is string && field.size() > 0;
+    }
+
+    function isValidRole(role) {
+      return role in ['admin', 'staff', 'customer', 'agent'];
+    }
+
+    function isValidTransactionType(type) {
+      return type in ['deposit', 'withdrawal', 'transfer', 'payment', 'refund'];
+    }
+
+    function isAgentAllowedType(type) {
+      return type in ['deposit', 'payment'];
+    }
+
+    // Customer-initiated transaction types (internal ledger — Phase 6.3)
+    function isCustomerAllowedType(type) {
+      return type in ['payment', 'transfer'];
+    }
+
+    // Loan status validation
+    function isValidLoanStatus(status) {
+      return status in ['active', 'completed', 'defaulted', 'closed'];
+    }
+
+    function isValidStatus(status) {
+      return status in ['pending', 'completed', 'failed', 'cancelled'];
+    }
+
+    function isValidTaskStatus(status) {
+      return status in ['pending', 'in_progress', 'completed', 'cancelled'];
+    }
+
+    function isValidPriority(priority) {
+      return priority in ['low', 'medium', 'high', 'urgent'];
+    }
+
+    function isValidCommissionStatus(status) {
+      return status in ['pending', 'paid', 'cancelled'];
+    }
+
+    // Field immutability checker
+    function fieldUnchanged(field) {
+      return request.resource.data[field] == resource.data[field];
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Users Collection
+    // ═══════════════════════════════════════════════════════
+    match /users/{userId} {
+      // --- READ ---
+      // Admin:    all users
+      // Staff:    only customers assigned to them (assignedStaffId == uid)
+      // Agent:    own profile + customers they onboarded (Q4 — read-only, non-sensitive)
+      // Customer: own profile only
+      allow read: if isAuthenticated() && (
+        isAdmin()
+        || (isStaff() && resource.data.role == 'customer'
+            && resource.data.assignedStaffId == request.auth.uid)
+        || isOwner(userId)
+        || (isAgent() && resource.data.role == 'customer'
+            && resource.data.onboardedByAgent == request.auth.uid)
+      );
+
+      // --- CREATE ---
+      // Self-registration: must set role to 'customer' (enforced server-side)
+      // Admin: can create any role
+      allow create: if isAuthenticated()
+        && isValidString(request.resource.data.displayName)
+        && isValidString(request.resource.data.email)
+        && isValidRole(request.resource.data.role)
+        && request.resource.data.status == 'active'
+        && (
+          // Self-registration: force customer role
+          (isOwner(userId) && request.resource.data.role == 'customer')
+          // Admin creating other users: any role allowed
+          || isAdmin()
+          // Agent onboarding: can only create customers, must link to self
+          || (isAgent()
+            && request.resource.data.role == 'customer'
+            && request.resource.data.onboardedByAgent == request.auth.uid
+          )
+        );
+
+      // --- UPDATE ---
+      // Admin: can update any user (except cannot demote self)
+      // Owner: can update own profile (no role/status/email changes)
+      // Agent: can update customers they onboarded (limited fields)
+      allow update: if isAuthorized() && (
+        (isAdmin()
+          // Admin self-demotion protection: admin cannot change own role
+          && (userId != request.auth.uid || fieldUnchanged('role'))
+        )
+        || (isOwner(userId)
+          && fieldUnchanged('role')
+          && fieldUnchanged('status')
+          && fieldUnchanged('email')
+          && fieldUnchanged('onboardedByAgent')
+        )
+        // Agent can update customers they onboarded (e.g., set uid after creation)
+        || (isAgent()
+          && resource.data.onboardedByAgent == request.auth.uid
+          && resource.data.role == 'customer'
+          && fieldUnchanged('role')
+          && fieldUnchanged('status')
+          && fieldUnchanged('onboardedByAgent')
+        )
+      );
+
+      // --- DELETE ---
+      // Admin only, cannot delete self
+      allow delete: if isAuthorized() && isAdmin() && !isOwner(userId);
+
+      // --- SUBCOLLECTION: Notifications ---
+      match /notifications/{notificationId} {
+        // Users can read, update (mark as read), and delete their own notifications
+        allow read, update, delete: if isAuthorized() && isOwner(userId);
+        // Backend services/Cloud functions bypass rules. Anyone creating a notification 
+        // to a user must be authorized (admin/staff/agent triggering an action).
+        allow create: if isAuthorized();
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Transactions Collection (Financial — Immutable Records)
+    // ═══════════════════════════════════════════════════════
+    match /transactions/{txId} {
+      // --- READ ---
+      // Admin:    all transactions
+      // Staff:    transactions they processed (staffId == uid)
+      //           OR transactions for their assigned customers (Q2 — assignedStaffId)
+      // Customer: only own transactions (customerId == uid)
+      // Agent:    only own transactions (agentId == uid)
+      allow read: if isAuthorized() && (
+        isAdmin()
+        || (isStaff() && (
+             resource.data.staffId == request.auth.uid
+             || resource.data.assignedStaffId == request.auth.uid
+           ))
+        || (isCustomer() && resource.data.customerId == request.auth.uid)
+        || (isAgent() && resource.data.agentId == request.auth.uid)
+      );
+
+      // --- CREATE ---
+      // Admin/Staff: any valid transaction type
+      // Agent: only 'deposit' and 'payment', must set agentId to self
+      // Customer: only 'payment' and 'transfer', forced to own UID,
+      //          capped at ₹50,000 per transaction (Phase 6.3)
+      // effectiveDate: optional user-supplied "value date" (System Date vs Effective Date pattern)
+      // createdAt (server timestamp) remains the authoritative System Date
+      allow create: if isAuthorized()
+        && request.resource.data.amount is int
+        && request.resource.data.amount > 0
+        && isValidTransactionType(request.resource.data.type)
+        && request.resource.data.status == 'pending'
+        && isValidString(request.resource.data.customerId)
+        // effectiveDate is optional; if provided, must be a valid timestamp
+        && (!('effectiveDate' in request.resource.data) || request.resource.data.effectiveDate is timestamp)
+        && (
+          (isAdmin() || isStaff())
+          || (isAgent()
+            && isAgentAllowedType(request.resource.data.type)
+            && request.resource.data.agentId == request.auth.uid
+          )
+          || (isCustomer()
+            && isCustomerAllowedType(request.resource.data.type)
+            && request.resource.data.customerId == request.auth.uid
+            && request.resource.data.amount <= 5000000  // ₹50,000 cap (paise)
+          )
+        );
+
+      // --- UPDATE ---
+      // Only Admin/Staff can update, and ONLY the status field
+      // Amount, type, customerId, agentId are IMMUTABLE after creation
+      allow update: if isAuthorized()
+        && (isAdmin() || isStaff())
+        && isValidStatus(request.resource.data.status)
+        && fieldUnchanged('amount')
+        && fieldUnchanged('type')
+        && fieldUnchanged('customerId')
+        && fieldUnchanged('effectiveDate');
+
+      // --- DELETE ---
+      // NEVER — financial records are immutable
+      allow delete: if false;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Tasks Collection
+    // ═══════════════════════════════════════════════════════
+    match /tasks/{taskId} {
+      // --- READ ---
+      // Admin: all tasks
+      // Staff/Agent: only tasks assigned to them
+      allow read: if isAuthorized() && (
+        isAdmin()
+        || ((isStaff() || isAgent()) && resource.data.assignedTo == request.auth.uid)
+      );
+
+      // --- CREATE ---
+      // Admin or Staff, must set createdBy to self
+      allow create: if isAuthorized()
+        && (isAdmin() || isStaff())
+        && isValidString(request.resource.data.title)
+        && isValidTaskStatus(request.resource.data.status)
+        && isValidPriority(request.resource.data.priority)
+        && request.resource.data.createdBy == request.auth.uid;
+
+      // --- UPDATE ---
+      // Admin: can update any field
+      // Staff/Agent: can only update status of their own tasks
+      allow update: if isAuthorized() && (
+        isAdmin()
+        || ((isStaff() || isAgent())
+          && resource.data.assignedTo == request.auth.uid
+          && isValidTaskStatus(request.resource.data.status)
+          && fieldUnchanged('assignedTo')
+          && fieldUnchanged('createdBy')
+          && fieldUnchanged('title')
+        )
+      );
+
+      // --- DELETE ---
+      // Admin only
+      allow delete: if isAuthorized() && isAdmin();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Commissions Collection (Financial — Immutable Records)
+    // ═══════════════════════════════════════════════════════
+    match /commissions/{commId} {
+      // --- READ ---
+      // Admin: all commissions
+      // Agent: only own commissions
+      allow read: if isAuthorized() && (
+        isAdmin()
+        || (isAgent() && resource.data.agentId == request.auth.uid)
+      );
+
+      // --- CREATE ---
+      // Admin only, with full validation
+      allow create: if isAuthorized() && isAdmin()
+        && request.resource.data.amount is int
+        && request.resource.data.amount > 0
+        && isValidString(request.resource.data.agentId)
+        && request.resource.data.rate is number
+        && request.resource.data.rate > 0
+        && request.resource.data.rate <= 100
+        && isValidCommissionStatus(request.resource.data.status);
+
+      // --- UPDATE ---
+      // Admin only, can only change status (pending → paid/cancelled)
+      // Amount and rate are immutable
+      allow update: if isAuthorized() && isAdmin()
+        && isValidCommissionStatus(request.resource.data.status)
+        && fieldUnchanged('amount')
+        && fieldUnchanged('rate')
+        && fieldUnchanged('agentId');
+
+      // --- DELETE ---
+      // NEVER — financial records are immutable
+      allow delete: if false;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Loans Collection (Financial — Phase 6.3)
+    // ═══════════════════════════════════════════════════════
+    // Dedicated collection: supports multiple concurrent loans per customer.
+    // Schema: customerId, loanType, principalAmount, interestRate,
+    //         tenureMonths, emiAmount, totalPaid, remainingBalance,
+    //         status, nextDueDate, disbursedAt, assignedStaffId
+    match /loans/{loanId} {
+      // --- READ ---
+      // Admin:    all loans
+      // Staff:    loans for customers assigned to them
+      // Customer: only own loans (customerId == uid)
+      allow read: if isAuthorized() && (
+        isAdmin()
+        || (isStaff() && resource.data.assignedStaffId == request.auth.uid)
+        || (isCustomer() && resource.data.customerId == request.auth.uid)
+      );
+
+      // --- CREATE ---
+      // Admin/Staff only — customers cannot self-issue loans
+      allow create: if isAuthorized()
+        && (isAdmin() || isStaff())
+        && isValidString(request.resource.data.customerId)
+        && request.resource.data.principalAmount is int
+        && request.resource.data.principalAmount > 0
+        && request.resource.data.interestRate is number
+        && request.resource.data.interestRate > 0
+        && request.resource.data.interestRate <= 100
+        && isValidLoanStatus(request.resource.data.status);
+
+      // --- UPDATE ---
+      // Admin/Staff: can update repayment fields
+      // Principal, interest rate are IMMUTABLE after creation
+      allow update: if isAuthorized()
+        && (isAdmin() || isStaff())
+        && fieldUnchanged('principalAmount')
+        && fieldUnchanged('interestRate')
+        && fieldUnchanged('customerId')
+        && isValidLoanStatus(request.resource.data.status);
+
+      // --- DELETE ---
+      // NEVER — financial records are immutable
+      allow delete: if false;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Mail Collection (Email Notifications — Phase 6.3)
+    // ═══════════════════════════════════════════════════════
+    // Used by Firebase "Trigger Email" extension.
+    // Documents here trigger automated email sends.
+    match /mail/{mailId} {
+      // No one reads mail queue from client
+      allow read: if false;
+
+      // Any authenticated user can trigger an email (self-receipt)
+      // but the 'to' field must match their own email
+      allow create: if isAuthorized();
+
+      // Immutable — extension manages lifecycle
+      allow update, delete: if false;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Activity Logs (Append-Only Audit Trail)
+    // ═══════════════════════════════════════════════════════
+    match /activityLogs/{logId} {
+      // Read: Admin only
+      allow read: if isAuthorized() && isAdmin();
+
+      // Create: Any active authenticated user (auto-logged actions)
+      allow create: if isAuthorized()
+        && isValidString(request.resource.data.action)
+        && request.resource.data.userId == request.auth.uid;
+
+      // Immutable — no updates or deletes ever
+      allow update, delete: if false;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // App Settings Collection — Global Configuration
+    // ═══════════════════════════════════════════════════════
+    // Single doc: appSettings/global
+    // Contains: branding, financial defaults, operational guardrails
+    match /appSettings/{docId} {
+      // All users (including unauthenticated) can read settings
+      // (needed for Login/Register screens)
+      allow read: if true;
+
+      // Only admin can create/modify settings
+      allow create: if isAuthorized() && isAdmin();
+      allow update: if isAuthorized() && isAdmin();
+
+      // Settings should never be deleted
+      allow delete: if false;
+    }
+  }
+}

@@ -1,0 +1,339 @@
+import { useState, useEffect } from 'react';
+import {
+  Settings as SettingsIcon, User, Mail, Phone, MapPin, Save, CheckCircle,
+  Shield, DollarSign, Sliders, ToggleLeft, ToggleRight, AlertTriangle, Moon, Sun, Monitor
+} from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
+import { useTheme } from '../../contexts/ThemeContext';
+import { updateUser } from '../../services/userService';
+import { getSettings, saveSettings } from '../../services/settingsService';
+import { useToast } from '../../contexts/ToastContext';
+import { useIsMobile } from '../../hooks/useMediaQuery';
+
+export default function SettingsPage() {
+  const { userProfile, isAdmin } = useAuth();
+  const { theme, toggleTheme } = useTheme();
+  const { showToast } = useToast();
+  const isMobile = useIsMobile();
+
+  const [activeTab, setActiveTab] = useState('profile');
+  const [form, setForm] = useState({
+    displayName: userProfile?.displayName || '',
+    phone: userProfile?.phone || '',
+    address: {
+      street: userProfile?.address?.street || '',
+      city: userProfile?.address?.city || '',
+      state: userProfile?.address?.state || '',
+      zip: userProfile?.address?.zip || '',
+    },
+  });
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  // System settings (admin only)
+  const [sysSettings, setSysSettings] = useState(null);
+  const [sysLoading, setSysLoading] = useState(false);
+  const [sysSaving, setSysSaving] = useState(false);
+
+  // Load system settings when admin switches to that tab
+  useEffect(() => {
+    if (activeTab === 'system' && isAdmin && !sysSettings) {
+      setSysLoading(true);
+      getSettings().then(data => {
+        setSysSettings(data);
+        setSysLoading(false);
+      }).catch(() => setSysLoading(false));
+    }
+  }, [activeTab, isAdmin, sysSettings]);
+
+  function handleChange(e) {
+    const { name, value } = e.target;
+    if (name.startsWith('address.')) {
+      const key = name.split('.')[1];
+      setForm(prev => ({ ...prev, address: { ...prev.address, [key]: value } }));
+    } else {
+      setForm(prev => ({ ...prev, [name]: value }));
+    }
+  }
+
+  function handleSysChange(e) {
+    const { name, value, type } = e.target;
+    setSysSettings(prev => ({
+      ...prev,
+      [name]: type === 'number' ? parseFloat(value) || 0 : value,
+    }));
+  }
+
+  function handleSysToggle(field) {
+    setSysSettings(prev => ({ ...prev, [field]: !prev[field] }));
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await updateUser(userProfile.uid, form);
+      setSaved(true);
+      showToast('Profile updated successfully', 'success');
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err) {
+      console.error(err);
+      showToast('Failed to update profile', 'error');
+    }
+    setSaving(false);
+  }
+
+  async function handleSysSubmit(e) {
+    e.preventDefault();
+    setSysSaving(true);
+    try {
+      await saveSettings(sysSettings, userProfile.uid);
+      showToast('System settings saved', 'success');
+    } catch (err) {
+      console.error(err);
+      showToast('Failed to save settings', 'error');
+    }
+    setSysSaving(false);
+  }
+
+  const labelStyle = {
+    display: 'flex', alignItems: 'center', gap: '0.375rem',
+    fontSize: '0.8125rem', fontWeight: 500,
+    color: 'var(--color-text-secondary)', marginBottom: '0.375rem',
+  };
+
+  const sectionStyle = {
+    marginBottom: '1.5rem', paddingBottom: '1.25rem',
+    borderBottom: '1px solid var(--color-border)',
+  };
+
+  return (
+    <div className="animate-fade-in" style={{ maxWidth: 680 }}>
+      <h1 style={{ fontSize: isMobile ? '1.25rem' : '1.5rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+        <SettingsIcon size={isMobile ? 22 : 24} /> Settings
+      </h1>
+      <p style={{ color: 'var(--color-text-muted)', fontSize: '0.875rem', marginBottom: '1.25rem' }}>
+        Manage your profile and application settings.
+      </p>
+
+      {/* Tab Switcher */}
+      <div style={{ display: 'flex', gap: '0.25rem', marginBottom: '1.25rem' }}>
+        <button
+          className={`btn btn-sm ${activeTab === 'profile' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setActiveTab('profile')}
+        >
+          <User size={14} /> Profile
+        </button>
+        {isAdmin && (
+          <button
+            className={`btn btn-sm ${activeTab === 'system' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setActiveTab('system')}
+          >
+            <Sliders size={14} /> System Settings
+          </button>
+        )}
+      </div>
+
+      {/* ── TAB 1: Profile Settings ── */}
+      {activeTab === 'profile' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+          
+          {/* Appearance Section */}
+          <div className="glass-card" style={{ padding: '1.5rem' }}>
+            <h3 style={{ fontSize: '1rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+              <Monitor size={18} /> Appearance
+            </h3>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem 0' }}>
+              <div>
+                <p style={{ fontSize: '0.875rem', fontWeight: 500 }}>Global Layout Theme</p>
+                <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>Toggle between light and dark modes.</p>
+              </div>
+              <button 
+                type="button"
+                onClick={toggleTheme}
+                className="btn btn-secondary"
+                style={{ padding: '0.5rem 1rem', borderRadius: '2rem' }}
+              >
+                {theme === 'dark' ? <Moon size={16} /> : <Sun size={16} color="#f59e0b" />}
+                {theme === 'dark' ? 'Dark Mode' : 'Light Mode'}
+              </button>
+            </div>
+          </div>
+
+          <div className="glass-card" style={{ padding: '1.5rem' }}>
+            {/* Profile Header */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem', paddingBottom: '1.25rem', borderBottom: '1px solid var(--color-border)' }}>
+            <div style={{
+              width: 60, height: 60, borderRadius: '50%',
+              background: 'linear-gradient(135deg, var(--color-primary-600), var(--color-accent-500))',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: '1.5rem', fontWeight: 800, color: 'white',
+            }}>
+              {userProfile?.displayName?.charAt(0)?.toUpperCase() || 'U'}
+            </div>
+            <div>
+              <h3 style={{ fontSize: '1.125rem', fontWeight: 700 }}>{userProfile?.displayName}</h3>
+              <p style={{ color: 'var(--color-text-muted)', fontSize: '0.8125rem' }}>{userProfile?.email}</p>
+              <span className="badge badge-info" style={{ marginTop: '0.25rem', textTransform: 'capitalize' }}>{userProfile?.role}</span>
+            </div>
+          </div>
+
+          <form onSubmit={handleSubmit}>
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={labelStyle}><User size={14} /> Full Name</label>
+              <input className="input" name="displayName" value={form.displayName} onChange={handleChange} />
+            </div>
+
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={labelStyle}><Mail size={14} /> Email</label>
+              <input className="input" value={userProfile?.email} disabled style={{ opacity: 0.6 }} />
+            </div>
+
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={labelStyle}><Phone size={14} /> Phone</label>
+              <input className="input" name="phone" value={form.phone} onChange={handleChange} placeholder="Your phone number" />
+            </div>
+
+            <div style={{ marginBottom: '1.25rem' }}>
+              <label style={labelStyle}><MapPin size={14} /> Address</label>
+              <input className="input" name="address.street" value={form.address.street} onChange={handleChange} placeholder="Street" style={{ marginBottom: '0.5rem' }} />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }}>
+                <input className="input" name="address.city" value={form.address.city} onChange={handleChange} placeholder="City" />
+                <input className="input" name="address.state" value={form.address.state} onChange={handleChange} placeholder="State" />
+                <input className="input" name="address.zip" value={form.address.zip} onChange={handleChange} placeholder="ZIP" />
+              </div>
+            </div>
+
+            <button type="submit" className="btn btn-primary" disabled={saving}>
+              {saved ? <><CheckCircle size={16} /> Saved!</> : saving ? 'Saving...' : <><Save size={16} /> Save Changes</>}
+            </button>
+          </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── TAB 2: System Settings (Admin Only) ── */}
+      {activeTab === 'system' && isAdmin && (
+        <div className="glass-card" style={{ padding: '1.5rem' }}>
+          {sysLoading ? (
+            <div style={{ textAlign: 'center', padding: '2rem' }}>
+              <p style={{ color: 'var(--color-text-muted)' }}>Loading settings...</p>
+            </div>
+          ) : sysSettings ? (
+            <form onSubmit={handleSysSubmit}>
+              {/* Branding Section */}
+              <div style={sectionStyle}>
+                <h3 style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '1rem' }}>
+                  Branding
+                </h3>
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '0.75rem' }}>
+                  <div>
+                    <label style={labelStyle}>App Name</label>
+                    <input className="input" name="appName" value={sysSettings.appName} onChange={handleSysChange} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Currency</label>
+                    <select className="input" name="currency" value={sysSettings.currency} onChange={handleSysChange}>
+                      <option value="INR">INR (₹)</option>
+                      <option value="USD">USD ($)</option>
+                      <option value="EUR">EUR (€)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Timezone</label>
+                    <select className="input" name="timezone" value={sysSettings.timezone} onChange={handleSysChange}>
+                      <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
+                      <option value="UTC">UTC</option>
+                      <option value="America/New_York">America/New_York (EST)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Financial Defaults Section */}
+              <div style={sectionStyle}>
+                <h3 style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                  <DollarSign size={14} /> Financial Defaults
+                </h3>
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '0.75rem' }}>
+                  <div>
+                    <label style={labelStyle}>Default Commission Rate (%)</label>
+                    <input className="input" name="defaultCommissionRate" type="number" step="0.1" min="0" max="100" value={sysSettings.defaultCommissionRate} onChange={handleSysChange} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Max Commission Rate (%)</label>
+                    <input className="input" name="maxCommissionRate" type="number" step="0.1" min="0" max="100" value={sysSettings.maxCommissionRate} onChange={handleSysChange} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Min Transaction Amount (₹)</label>
+                    <input className="input" name="minTransactionAmount" type="number" min="0" value={sysSettings.minTransactionAmount} onChange={handleSysChange} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Max Transaction Amount (₹)</label>
+                    <input className="input" name="maxTransactionAmount" type="number" min="0" value={sysSettings.maxTransactionAmount} onChange={handleSysChange} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Auto-Approval Threshold (₹)</label>
+                    <input className="input" name="autoApprovalThreshold" type="number" min="0" value={sysSettings.autoApprovalThreshold} onChange={handleSysChange} />
+                    <p style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)', marginTop: '0.25rem' }}>
+                      Transactions below this amount are auto-approved
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Operational Guardrails Section */}
+              <div style={{ marginBottom: '1.5rem' }}>
+                <h3 style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                  <Shield size={14} /> Operational Guardrails
+                </h3>
+
+                {/* Toggle switches */}
+                {[
+                  { field: 'maintenanceMode', label: 'Maintenance Mode', desc: 'Disable all user operations during maintenance', danger: true },
+                  { field: 'allowNewRegistrations', label: 'Allow New Registrations', desc: 'Control whether new users can self-register' },
+                  { field: 'requireKycForTransactions', label: 'Require KYC for Transactions', desc: 'Block transactions from users without verified KYC' },
+                ].map(({ field, label, desc, danger }) => (
+                  <div key={field} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '0.875rem 0', borderBottom: '1px solid var(--color-border)',
+                  }}>
+                    <div>
+                      <p style={{ fontSize: '0.8125rem', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                        {danger && sysSettings[field] && <AlertTriangle size={14} color="var(--color-danger)" />}
+                        {label}
+                      </p>
+                      <p style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>{desc}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleSysToggle(field)}
+                      style={{
+                        background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                        color: sysSettings[field] ? (danger ? 'var(--color-danger)' : '#10b981') : 'var(--color-text-muted)',
+                      }}
+                    >
+                      {sysSettings[field] ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
+                    </button>
+                  </div>
+                ))}
+
+                <div style={{ marginTop: '1rem' }}>
+                  <label style={labelStyle}>Max Lead Age (days)</label>
+                  <input className="input" name="maxLeadAgeDays" type="number" min="1" max="365" value={sysSettings.maxLeadAgeDays} onChange={handleSysChange} style={{ maxWidth: 200 }} />
+                  <p style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)', marginTop: '0.25rem' }}>
+                    Leads older than this are flagged as stale in Reports
+                  </p>
+                </div>
+              </div>
+
+              <button type="submit" className="btn btn-primary" disabled={sysSaving}>
+                {sysSaving ? 'Saving...' : <><Save size={16} /> Save System Settings</>}
+              </button>
+            </form>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}

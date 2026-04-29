@@ -1,0 +1,30 @@
+{
+  "admin": {
+    "email": "admin@financeflow.com",
+    "password": "Admin@123",
+    "role": "admin",
+    "dashboardHeading": "Welcome back",
+    "sidebarItems": ["Dashboard", "Manage Users", "Customers", "Transactions", "Tasks", "Commissions", "Reports", "Activity Logs", "Settings"]
+  },
+  "staff": {
+    "email": "staff@financeflow.com",
+    "password": "Staff@123",
+    "role": "staff",
+    "dashboardHeading": "Staff Dashboard",
+    "sidebarItems": ["Dashboard", "Customers", "Transactions", "Tasks", "Settings"]
+  },
+  "customer": {
+    "email": "customer@financeflow.com",
+    "password": "Cust@123",
+    "role": "customer",
+    "dashboardHeading": "My Dashboard",
+    "sidebarItems": ["Dashboard", "Transactions", "Loans", "Settings"]
+  },
+  "agent": {
+    "email": "agent@financeflow.com",
+    "password": "Agent@123",
+    "role": "agent",
+    "dashboardHeading": "Agent Dashboard",
+    "sidebarItems": ["Dashboard", "Portfolio", "Transactions", "Tasks", "Commissions", "Settings"]
+  }
+}
