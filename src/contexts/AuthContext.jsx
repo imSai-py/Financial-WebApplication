@@ -1,15 +1,15 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { 
+import {
   onAuthStateChanged, 
   signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
   signOut,
   sendPasswordResetEmail,
   browserSessionPersistence,
   setPersistence,
 } from 'firebase/auth';
-import { doc, getDoc, setDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { auth, db } from '../config/firebase';
+import { validators } from '../utils/validation';
 
 const AuthContext = createContext(null);
 
@@ -109,6 +109,14 @@ export function AuthProvider({ children }) {
       return firestoreRole || 'customer';
     }
   }, []);
+
+  const buildUserProfile = useCallback((authUser, docData = {}, resolvedRole) => ({
+    ...docData,
+    uid: authUser.uid,
+    displayName: docData.displayName || authUser.displayName || '',
+    email: docData.email || authUser.email || '',
+    role: resolvedRole,
+  }), []);
 
   /**
    * Force refresh the user's JWT token to pick up updated custom claims.
@@ -222,7 +230,7 @@ export function AuthProvider({ children }) {
               // Guard again after async gap
               if (activeUidRef.current !== user.uid) return;
 
-              setUserProfile({ uid: user.uid, ...docData, role: resolvedRole });
+              setUserProfile(buildUserProfile(user, docData, resolvedRole));
             } else {
               setUserProfile(null);
             }
@@ -252,7 +260,7 @@ export function AuthProvider({ children }) {
       authUnsub();
       if (profileUnsub) profileUnsub();
     };
-  }, [resolveRole]);
+  }, [buildUserProfile, resolveRole]);
 
   /**
    * Login with email & password.
@@ -267,7 +275,22 @@ export function AuthProvider({ children }) {
    * Returns the resolved profile object.
    */
   async function login(email, password) {
-    const cred = await signInWithEmailAndPassword(auth, email, password);
+    const normalizedEmail = typeof email === 'string' ? email.trim() : '';
+    const emailError = validators.email(normalizedEmail);
+    if (emailError) {
+      const err = new Error(emailError);
+      err.code = emailError === 'Email is required' ? 'auth/missing-email' : 'auth/invalid-email';
+      throw err;
+    }
+
+    const passwordError = validators.required(password, 'Password');
+    if (passwordError) {
+      const err = new Error(passwordError);
+      err.code = 'auth/missing-password';
+      throw err;
+    }
+
+    const cred = await signInWithEmailAndPassword(auth, normalizedEmail, password);
     
     // Force token refresh to pick up latest custom claims (e.g., after role change)
     await cred.user.getIdToken(true);
@@ -292,11 +315,7 @@ export function AuthProvider({ children }) {
     // Hybrid role resolution at login
     const resolvedRole = await resolveRole(cred.user, docData.role);
 
-    const profile = {
-      uid: cred.user.uid,
-      ...docData,
-      role: resolvedRole,
-    };
+    const profile = buildUserProfile(cred.user, docData, resolvedRole);
 
     // ── Cache for onAuthStateChanged ──
     // Store the profile so the listener (which fires next) can skip
@@ -316,30 +335,7 @@ export function AuthProvider({ children }) {
    * automatically — belt-and-suspenders approach.
    */
   async function register(email, password, userData) {
-    const cred = await createUserWithEmailAndPassword(auth, email, password);
-    const profile = {
-      uid: cred.user.uid,
-      email,
-      displayName: userData.displayName || '',
-      // ⚠️ SECURITY: Self-registration is ALWAYS 'customer'.
-      // Firestore Rules enforce this as a second barrier.
-      // onUserCreate Cloud Function sets custom claim as a third barrier.
-      role: 'customer',
-      phone: userData.phone || '',
-      status: 'active',
-      address: userData.address || { street: '', city: '', state: '', zip: '' },
-      profileImage: '',
-      onboardedByAgent: userData.onboardedByAgent || null,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-    await setDoc(doc(db, 'users', cred.user.uid), profile);
-
-    // Cache for onAuthStateChanged (same optimization as login)
-    loginProfileRef.current = profile;
-
-    setUserProfile(profile);
-    return profile;
+    throw new Error('Self-service registration is disabled. Contact your administrator, staff member, or agent.');
   }
 
   async function logout() {

@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { useSettings } from '../../contexts/SettingsContext';
+import { validateForm, validators } from '../../utils/validation';
 import { TrendingUp, Mail, Lock, Eye, EyeOff, ArrowRight } from 'lucide-react';
 
 export default function LoginForm() {
@@ -10,6 +11,7 @@ export default function LoginForm() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState({});
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const { showToast } = useToast();
@@ -19,9 +21,24 @@ export default function LoginForm() {
   async function handleSubmit(e) {
     e.preventDefault();
     setError('');
+    const normalizedEmail = email.trim();
+    const errors = validateForm(
+      { email: normalizedEmail, password },
+      {
+        email: [validators.email],
+        password: [(value) => validators.required(value, 'Password')],
+      }
+    );
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      return;
+    }
+
+    setFieldErrors({});
     setLoading(true);
     try {
-      const profile = await login(email, password);
+      const profile = await login(normalizedEmail, password);
 
       // Welcome toast (Improvement 3) — confirms role for security awareness
       const name = profile.displayName || 'User';
@@ -33,11 +50,14 @@ export default function LoginForm() {
       const map = {
         'auth/user-not-found': 'No account found with this email.',
         'auth/wrong-password': 'Incorrect password.',
+        'auth/missing-email': 'Email is required.',
         'auth/invalid-email': 'Invalid email address.',
+        'auth/missing-password': 'Password is required.',
         'auth/too-many-requests': 'Too many attempts. Please try again later.',
         'auth/invalid-credential': 'Invalid email or password.',
       };
       setError(map[err.code] || err.message || 'Login failed.');
+      setFieldErrors({});
     }
     setLoading(false);
   }
@@ -126,7 +146,7 @@ export default function LoginForm() {
             </div>
           )}
 
-          <form onSubmit={handleSubmit}>
+          <form onSubmit={handleSubmit} noValidate>
             <div style={{ marginBottom: '1.25rem' }}>
               <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: 'var(--color-text-secondary)', marginBottom: '0.375rem' }}>
                 Email Address
@@ -134,12 +154,26 @@ export default function LoginForm() {
               <div style={{ position: 'relative' }}>
                 <Mail size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
                 <input
-                  type="email" value={email} onChange={e => setEmail(e.target.value)}
-                  className="input" id="login-email" required
+                  type="email" value={email} onChange={e => {
+                    setEmail(e.target.value);
+                    if (fieldErrors.email) {
+                      setFieldErrors((prev) => ({ ...prev, email: undefined }));
+                    }
+                  }}
+                  className="input" id="login-email"
                   placeholder="you@example.com"
-                  style={{ paddingLeft: 38 }}
+                  aria-invalid={fieldErrors.email ? 'true' : 'false'}
+                  style={{
+                    paddingLeft: 38,
+                    borderColor: fieldErrors.email ? 'var(--color-danger)' : undefined,
+                  }}
                 />
               </div>
+              {fieldErrors.email && (
+                <p style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: 'var(--color-danger)' }}>
+                  {fieldErrors.email}
+                </p>
+              )}
             </div>
 
             <div style={{ marginBottom: '1.5rem' }}>
@@ -155,10 +189,20 @@ export default function LoginForm() {
                 <Lock size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
                 <input
                   type={showPassword ? 'text' : 'password'} value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  className="input" id="login-password" required
+                  onChange={e => {
+                    setPassword(e.target.value);
+                    if (fieldErrors.password) {
+                      setFieldErrors((prev) => ({ ...prev, password: undefined }));
+                    }
+                  }}
+                  className="input" id="login-password"
                   placeholder="Enter your password"
-                  style={{ paddingLeft: 38, paddingRight: 48 }}
+                  aria-invalid={fieldErrors.password ? 'true' : 'false'}
+                  style={{
+                    paddingLeft: 38,
+                    paddingRight: 48,
+                    borderColor: fieldErrors.password ? 'var(--color-danger)' : undefined,
+                  }}
                 />
                 <button
                   type="button" onClick={() => setShowPassword(!showPassword)}
@@ -174,6 +218,11 @@ export default function LoginForm() {
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
               </div>
+              {fieldErrors.password && (
+                <p style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: 'var(--color-danger)' }}>
+                  {fieldErrors.password}
+                </p>
+              )}
             </div>
 
             <button
@@ -191,10 +240,7 @@ export default function LoginForm() {
           </form>
 
           <p style={{ textAlign: 'center', marginTop: '1.5rem', fontSize: '0.875rem', color: 'var(--color-text-secondary)' }}>
-            Don't have an account?{' '}
-            <Link to="/register" style={{ color: 'var(--color-primary-400)', textDecoration: 'none', fontWeight: 600 }}>
-              Create account
-            </Link>
+            Need a customer account? Please contact your administrator, staff member, or agent.
           </p>
         </div>
       </div>

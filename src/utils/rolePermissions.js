@@ -8,6 +8,7 @@
  *   true        = full access
  *   false       = no access
  *   'own'       = scoped to documents owned by the user
+ *   'customer'  = can only create customer-role users
  *   'customers' = can only see customer-role users (staff)
  *   'onboarded' = can only see customers they onboarded (agent — Q4)
  *   'processed' = can only see records they processed (staff transactions)
@@ -29,7 +30,7 @@ export const ROLE_PERMISSIONS = {
     settings:     { read: true, update: true },
   },
   staff: {
-    users:        { create: false, read: 'customers', update: false, delete: false, changeRole: false },
+    users:        { create: 'customer', read: 'customers', update: false, delete: false, changeRole: false },
     transactions: { create: true, read: 'assigned', update: true, delete: false },
     tasks:        { create: false, read: 'own', update: 'own', delete: false, reassign: false },
     commissions:  { create: false, read: false, update: false, delete: false },
@@ -46,7 +47,7 @@ export const ROLE_PERMISSIONS = {
     settings:     { read: true, update: true },
   },
   agent: {
-    users:        { create: 'onboard', read: 'onboarded', update: 'own', delete: false, changeRole: false },
+    users:        { create: 'customer', read: 'onboarded', update: 'own', delete: false, changeRole: false },
     transactions: { create: 'limited', read: 'own', update: false, delete: false },
     tasks:        { create: false, read: 'own', update: 'own', delete: false },
     commissions:  { create: false, read: 'own', update: false, delete: false },

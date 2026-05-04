@@ -104,16 +104,32 @@ test.describe('Criterion 1: Auth & Routing', () => {
   });
 
   // ─── AUTH-04: Empty fields validation ───
-  test('AUTH-04: Empty form submission does not crash', async ({ page }) => {
+  test('AUTH-04: Empty form submission shows validation messages', async ({ page }) => {
     await page.goto('/login');
     await page.waitForSelector('#login-submit', { state: 'visible', timeout: 10000 });
     
-    // Click submit without filling anything - HTML5 validation should prevent submission
+    // Click submit without filling anything - app validation should handle it
     await page.click('#login-submit');
     
-    // Should still be on login page (no crash, no navigation)
+    // Should still be on login page with visible field errors
     await page.waitForTimeout(1000);
     await expect(page).toHaveURL(/.*\/login/);
+    await expect(page.locator('text=Email is required')).toBeVisible();
+    await expect(page.locator('text=Password is required')).toBeVisible();
+  });
+
+  // â”€â”€â”€ AUTH-04B: Whitespace email validation â”€â”€â”€
+  test('AUTH-04B: Invalid email format shows invalid email message', async ({ page }) => {
+    await page.goto('/login');
+    await page.waitForSelector('#login-email', { state: 'visible', timeout: 10000 });
+
+    await page.fill('#login-email', 'not-an-email');
+    await page.fill('#login-password', USERS.staff.password);
+    await page.click('#login-submit');
+
+    await page.waitForTimeout(1000);
+    await expect(page).toHaveURL(/.*\/login/);
+    await expect(page.locator('text=Invalid email format')).toBeVisible();
   });
 
   // ─── AUTH-05: Unauthenticated → protected route → /login ───

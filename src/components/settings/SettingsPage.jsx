@@ -9,24 +9,29 @@ import { updateUser } from '../../services/userService';
 import { getSettings, saveSettings } from '../../services/settingsService';
 import { useToast } from '../../contexts/ToastContext';
 import { useIsMobile } from '../../hooks/useMediaQuery';
+import { validators } from '../../utils/validation';
 
 export default function SettingsPage() {
-  const { userProfile, isAdmin } = useAuth();
+  const { userProfile, currentUser, isAdmin } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { showToast } = useToast();
   const isMobile = useIsMobile();
 
-  const [activeTab, setActiveTab] = useState('profile');
-  const [form, setForm] = useState({
-    displayName: userProfile?.displayName || '',
-    phone: userProfile?.phone || '',
+  const EMPTY_FORM = {
+    displayName: '',
+    email: '',
+    phone: '',
     address: {
-      street: userProfile?.address?.street || '',
-      city: userProfile?.address?.city || '',
-      state: userProfile?.address?.state || '',
-      zip: userProfile?.address?.zip || '',
+      street: '',
+      city: '',
+      state: '',
+      zip: '',
     },
-  });
+  };
+
+  const [activeTab, setActiveTab] = useState('profile');
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -46,6 +51,23 @@ export default function SettingsPage() {
     }
   }, [activeTab, isAdmin, sysSettings]);
 
+  useEffect(() => {
+    if (!userProfile?.uid && !currentUser?.uid) return;
+
+    setForm({
+      displayName: userProfile?.displayName || currentUser?.displayName || '',
+      email: userProfile?.email || currentUser?.email || '',
+      phone: userProfile?.phone || '',
+      address: {
+        street: userProfile?.address?.street || '',
+        city: userProfile?.address?.city || '',
+        state: userProfile?.address?.state || '',
+        zip: userProfile?.address?.zip || '',
+      },
+    });
+    setErrors({});
+  }, [currentUser?.displayName, currentUser?.email, currentUser?.uid, userProfile]);
+
   function handleChange(e) {
     const { name, value } = e.target;
     if (name.startsWith('address.')) {
@@ -54,6 +76,7 @@ export default function SettingsPage() {
     } else {
       setForm(prev => ({ ...prev, [name]: value }));
     }
+    setErrors(prev => ({ ...prev, [name]: null }));
   }
 
   function handleSysChange(e) {
@@ -68,17 +91,47 @@ export default function SettingsPage() {
     setSysSettings(prev => ({ ...prev, [field]: !prev[field] }));
   }
 
+  function validateProfileForm() {
+    const nextErrors = {};
+    const nameErr = validators.required(form.displayName, 'Full name');
+    if (nameErr) nextErrors.displayName = nameErr;
+
+    const emailErr = validators.email(form.email);
+    if (emailErr) nextErrors.email = emailErr;
+
+    const phoneErr = validators.phone(form.phone);
+    if (phoneErr) nextErrors.phone = phoneErr;
+
+    setErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
+  }
+
   async function handleSubmit(e) {
     e.preventDefault();
+    if (!validateProfileForm()) return;
     setSaving(true);
     try {
-      await updateUser(userProfile.uid, form);
+      const updateData = {
+        displayName: form.displayName.trim(),
+        phone: form.phone.trim(),
+        address: {
+          street: form.address.street.trim(),
+          city: form.address.city.trim(),
+          state: form.address.state.trim(),
+          zip: form.address.zip.trim(),
+        },
+      };
+
+      await updateUser(currentUser.uid, updateData);
       setSaved(true);
       showToast('Profile updated successfully', 'success');
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
       console.error(err);
-      showToast('Failed to update profile', 'error');
+      const message = err.code === 'permission-denied'
+        ? 'You can only update your own profile. Please sign in again if this account was recently changed.'
+        : err.message || 'Failed to update profile';
+      showToast(message, 'error');
     }
     setSaving(false);
   }
@@ -182,16 +235,26 @@ export default function SettingsPage() {
             <div style={{ marginBottom: '1rem' }}>
               <label style={labelStyle}><User size={14} /> Full Name</label>
               <input className="input" name="displayName" value={form.displayName} onChange={handleChange} />
+              {errors.displayName && <p style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: 'var(--color-danger)' }}>{errors.displayName}</p>}
             </div>
 
             <div style={{ marginBottom: '1rem' }}>
               <label style={labelStyle}><Mail size={14} /> Email</label>
-              <input className="input" value={userProfile?.email} disabled style={{ opacity: 0.6 }} />
+              <input
+                className="input"
+                name="email"
+                type="email"
+                value={form.email}
+                readOnly
+                aria-readonly="true"
+              />
+              {errors.email && <p style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: 'var(--color-danger)' }}>{errors.email}</p>}
             </div>
 
             <div style={{ marginBottom: '1rem' }}>
               <label style={labelStyle}><Phone size={14} /> Phone</label>
               <input className="input" name="phone" value={form.phone} onChange={handleChange} placeholder="Your phone number" />
+              {errors.phone && <p style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: 'var(--color-danger)' }}>{errors.phone}</p>}
             </div>
 
             <div style={{ marginBottom: '1.25rem' }}>
@@ -291,7 +354,6 @@ export default function SettingsPage() {
                 {/* Toggle switches */}
                 {[
                   { field: 'maintenanceMode', label: 'Maintenance Mode', desc: 'Disable all user operations during maintenance', danger: true },
-                  { field: 'allowNewRegistrations', label: 'Allow New Registrations', desc: 'Control whether new users can self-register' },
                   { field: 'requireKycForTransactions', label: 'Require KYC for Transactions', desc: 'Block transactions from users without verified KYC' },
                 ].map(({ field, label, desc, danger }) => (
                   <div key={field} style={{

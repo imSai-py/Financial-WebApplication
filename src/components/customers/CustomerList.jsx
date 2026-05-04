@@ -180,7 +180,7 @@ export default function CustomerList() {
             {customers.length} total · {leadCount} leads · {verifiedCount} KYC verified
           </p>
         </div>
-        {isAdmin && (
+        {(isAdmin || isStaff) && (
           <button className="btn btn-primary" onClick={() => setCreateModal(true)} style={{ minHeight: isMobile ? 44 : undefined }}>
             <Plus size={16} /> Add Customer
           </button>
@@ -265,6 +265,8 @@ export default function CustomerList() {
         onClose={() => setCreateModal(false)}
         user={null}
         onSuccess={load}
+        allowedRoles={isStaff ? ['customer'] : undefined}
+        title={isStaff ? 'Create Customer' : undefined}
       />
     </div>
   );

@@ -3,9 +3,7 @@ import {
   UserCog, Plus, Edit2, Trash2, ShieldCheck, ShieldOff,
   UserCheck, UserX, Filter, CreditCard
 } from 'lucide-react';
-import { httpsCallable } from 'firebase/functions';
 import { getAllUsers, suspendUser, reactivateUser } from '../../services/userService';
-import { functions } from '../../config/firebase';
 import DataTable from '../shared/DataTable';
 import StatusBadge from '../shared/StatusBadge';
 import LoadingSpinner from '../shared/LoadingSpinner';
@@ -51,7 +49,7 @@ export default function UserManagement() {
   const [filter, setFilter] = useState('all');
 
   // Modal state
-  const [formModal, setFormModal] = useState({ open: false, user: null });
+  const [formModal, setFormModal] = useState({ open: false, user: null, leadSource: null });
   const [deleteModal, setDeleteModal] = useState({ open: false, user: null });
   const [actionLoading, setActionLoading] = useState(null); // uid of user being acted on
 
@@ -226,7 +224,7 @@ export default function UserManagement() {
             {/* Edit */}
             <button
               className="btn btn-ghost btn-sm"
-              onClick={(e) => { e.stopPropagation(); setFormModal({ open: true, user: row }); }}
+              onClick={(e) => { e.stopPropagation(); setFormModal({ open: true, user: row, leadSource: null }); }}
               title="Edit"
               style={{ padding: '0.375rem' }}
             >
@@ -237,9 +235,8 @@ export default function UserManagement() {
             {isLead && (
               <button
                 className="btn btn-ghost btn-sm"
-                onClick={(e) => { e.stopPropagation(); handlePromoteLead(row); }}
-                title="Promote to Active User"
-                disabled={isLoadingThis}
+                onClick={(e) => { e.stopPropagation(); setFormModal({ open: true, user: null, leadSource: row }); }}
+                title="Activate customer account"
                 style={{ padding: '0.375rem', color: '#10b981' }}
               >
                 <UserCheck size={14} />
@@ -306,7 +303,7 @@ export default function UserManagement() {
         </div>
         <button
           className="btn btn-primary"
-          onClick={() => setFormModal({ open: true, user: null })}
+          onClick={() => setFormModal({ open: true, user: null, leadSource: null })}
           style={{ minHeight: isMobile ? 44 : undefined }}
         >
           <Plus size={16} /> New User
@@ -360,8 +357,9 @@ export default function UserManagement() {
       {/* Modals */}
       <UserFormModal
         isOpen={formModal.open}
-        onClose={() => setFormModal({ open: false, user: null })}
+        onClose={() => setFormModal({ open: false, user: null, leadSource: null })}
         user={formModal.user}
+        leadSource={formModal.leadSource}
         onSuccess={loadUsers}
       />
       <UserDeleteConfirm

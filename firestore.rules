@@ -115,24 +115,14 @@ service cloud.firestore {
       );
 
       // --- CREATE ---
-      // Self-registration: must set role to 'customer' (enforced server-side)
-      // Admin: can create any role
+      // Admin only. Customer account creation for staff/agent goes through
+      // a callable backend so passwords stay in Firebase Auth, not Firestore.
       allow create: if isAuthenticated()
         && isValidString(request.resource.data.displayName)
         && isValidString(request.resource.data.email)
         && isValidRole(request.resource.data.role)
         && request.resource.data.status == 'active'
-        && (
-          // Self-registration: force customer role
-          (isOwner(userId) && request.resource.data.role == 'customer')
-          // Admin creating other users: any role allowed
-          || isAdmin()
-          // Agent onboarding: can only create customers, must link to self
-          || (isAgent()
-            && request.resource.data.role == 'customer'
-            && request.resource.data.onboardedByAgent == request.auth.uid
-          )
-        );
+        && isAdmin();
 
       // --- UPDATE ---
       // Admin: can update any user (except cannot demote self)

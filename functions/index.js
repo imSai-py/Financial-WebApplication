@@ -28,6 +28,47 @@ const db = getFirestore(app);
 // ═══════════════════════════════════════════════════════
 const VALID_ROLES = ["admin", "staff", "customer", "agent"];
 
+function normalizeEmail(email) {
+  return email.trim().toLowerCase();
+}
+
+function validatePassword(password) {
+  if (!password || typeof password !== "string") {
+    return "Password is required.";
+  }
+  if (password.length < 8) {
+    return "Password must be at least 8 characters long.";
+  }
+  if (!/[A-Z]/.test(password)) {
+    return "Password must include at least one uppercase letter.";
+  }
+  if (!/[a-z]/.test(password)) {
+    return "Password must include at least one lowercase letter.";
+  }
+  if (!/[0-9]/.test(password)) {
+    return "Password must include at least one number.";
+  }
+  if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>/?]/.test(password)) {
+    return "Password must include at least one special character.";
+  }
+  return null;
+}
+
+async function resolveCallerRole(request) {
+  const callerUid = request.auth?.uid;
+  let callerRole = request.auth?.token?.role;
+
+  if (!callerRole) {
+    const callerDoc = await db.collection("users").doc(callerUid).get();
+    if (!callerDoc.exists) {
+      throw new HttpsError("not-found", "Caller profile not found.");
+    }
+    callerRole = callerDoc.data().role;
+  }
+
+  return callerRole;
+}
+
 // ═══════════════════════════════════════════════════════
 // 1. setUserRole — Admin-Only Callable Function
 // ═══════════════════════════════════════════════════════
@@ -216,9 +257,9 @@ exports.onRoleFieldChange = onDocumentUpdated(
 // OR promotes an existing Firestore-only "lead" to a full user.
 //
 // Uses Admin SDK so the admin's session is NOT affected.
-// Sends a password reset email so the new user can set their password.
+// Customer passwords are supplied by an authorized creator and stored only in Firebase Auth.
 //
-// Input: { email, displayName, role, phone?, existingDocId? }
+// Input: { email, displayName, role, password?, phone?, existingDocId? }
 // Output: { success: true, uid: string, message: string }
 //
 exports.createUserByAdmin = onCall(
@@ -234,26 +275,18 @@ exports.createUserByAdmin = onCall(
 
     // ── Gate 2: Must be admin ──
     const callerUid = request.auth.uid;
-    let callerRole = request.auth.token.role;
+    const callerRole = await resolveCallerRole(request);
 
-    if (!callerRole) {
-      const callerDoc = await db.collection("users").doc(callerUid).get();
-      if (!callerDoc.exists) {
-        throw new HttpsError("not-found", "Caller profile not found.");
-      }
-      callerRole = callerDoc.data().role;
-    }
-
-    if (callerRole !== "admin") {
+    if (!["admin", "staff", "agent"].includes(callerRole)) {
       throw new HttpsError(
         "permission-denied",
-        "Only admins can create users."
+        "You do not have permission to create customer accounts."
       );
     }
 
     // ── Gate 3: Validate input ──
     const { email, displayName, role, phone, existingDocId,
-            panNumber, aadhaarLastFour, dateOfBirth, kycStatus, address } = request.data;
+            panNumber, aadhaarLastFour, dateOfBirth, kycStatus, address, password } = request.data;
 
     if (!email || typeof email !== "string" || !email.includes("@")) {
       throw new HttpsError("invalid-argument", "Valid email is required.");
@@ -271,12 +304,60 @@ exports.createUserByAdmin = onCall(
       );
     }
 
+    if (callerRole !== "admin" && targetRole !== "customer") {
+      throw new HttpsError(
+        "permission-denied",
+        "Only admins can create non-customer users."
+      );
+    }
+
+    if (targetRole === "customer") {
+      const passwordError = validatePassword(password);
+      if (passwordError) {
+        throw new HttpsError("invalid-argument", passwordError);
+      }
+    }
+
     try {
       // ── Create Firebase Auth account ──
+      const normalizedEmail = normalizeEmail(email);
+      let existingData = null;
+
+      if (existingDocId) {
+        const existingDoc = await db.collection("users").doc(existingDocId).get();
+        if (!existingDoc.exists) {
+          throw new HttpsError("not-found", "Existing customer record not found.");
+        }
+
+        existingData = existingDoc.data();
+
+        if (targetRole !== "customer") {
+          throw new HttpsError(
+            "failed-precondition",
+            "Lead promotion is only supported for customer accounts."
+          );
+        }
+
+        if (callerRole === "staff" && existingData.assignedStaffId !== callerUid) {
+          throw new HttpsError(
+            "permission-denied",
+            "Staff can only activate customers assigned to themselves."
+          );
+        }
+
+        if (callerRole === "agent" && existingData.onboardedByAgent !== callerUid) {
+          throw new HttpsError(
+            "permission-denied",
+            "Agents can only activate customers in their own portfolio."
+          );
+        }
+      }
+
       const userRecord = await auth.createUser({
-        email: email.trim().toLowerCase(),
+        email: normalizedEmail,
         displayName: displayName.trim(),
         disabled: false,
+        ...(targetRole === "customer" ? { password } : {}),
       });
 
       const newUid = userRecord.uid;
@@ -288,7 +369,7 @@ exports.createUserByAdmin = onCall(
       const userData = {
         uid: newUid,
         displayName: displayName.trim(),
-        email: email.trim().toLowerCase(),
+        email: normalizedEmail,
         phone: phone || null,
         role: targetRole,
         status: "active",
@@ -302,41 +383,32 @@ exports.createUserByAdmin = onCall(
         hasAuthAccount: true,
         promotedAt: FieldValue.serverTimestamp(),
         promotedBy: callerUid,
-        onboardedByAgent: null,
-        assignedStaffId: null,
+        onboardedByAgent: callerRole === "agent" && targetRole === "customer" ? callerUid : null,
+        assignedStaffId: callerRole === "staff" && targetRole === "customer" ? callerUid : null,
         address: address || { street: "", city: "", state: "", zip: "" },
         createdBy: callerUid,
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       };
 
-      // If promoting an existing lead, preserve original data and delete old doc
-      if (existingDocId && existingDocId !== newUid) {
-        const existingDoc = await db.collection("users").doc(existingDocId).get();
-        if (existingDoc.exists) {
-          const existingData = existingDoc.data();
-          // Merge: keep original fields, override with new auth data
-          userData.panNumber = userData.panNumber || existingData.panNumber || null;
-          userData.aadhaarLastFour = userData.aadhaarLastFour || existingData.aadhaarLastFour || null;
-          userData.dateOfBirth = userData.dateOfBirth || existingData.dateOfBirth || null;
-          userData.kycStatus = existingData.kycStatus || "not_submitted";
-          userData.onboardedByAgent = existingData.onboardedByAgent || null;
-          userData.assignedStaffId = existingData.assignedStaffId || null;
-          userData.address = existingData.address || userData.address;
-          userData.createdAt = existingData.createdAt || FieldValue.serverTimestamp();
-          userData.createdBy = existingData.createdBy || callerUid;
+      if (existingDocId && existingDocId !== newUid && existingData) {
+        userData.panNumber = userData.panNumber || existingData.panNumber || null;
+        userData.aadhaarLastFour = userData.aadhaarLastFour || existingData.aadhaarLastFour || null;
+        userData.dateOfBirth = userData.dateOfBirth || existingData.dateOfBirth || null;
+        userData.kycStatus = existingData.kycStatus || "not_submitted";
+        userData.onboardedByAgent = existingData.onboardedByAgent || userData.onboardedByAgent;
+        userData.assignedStaffId = existingData.assignedStaffId || userData.assignedStaffId;
+        userData.address = existingData.address || userData.address;
+        userData.createdAt = existingData.createdAt || FieldValue.serverTimestamp();
+        userData.createdBy = existingData.createdBy || callerUid;
 
-          // Delete the old lead document
-          await db.collection("users").doc(existingDocId).delete();
-        }
+        await db.collection("users").doc(existingDocId).delete();
       }
 
       // Write the user doc keyed by Auth UID
       await db.collection("users").doc(newUid).set(userData);
 
       // ── Send password reset email ──
-      const resetLink = await auth.generatePasswordResetLink(email.trim().toLowerCase());
-
       // ── Log to activity logs ──
       await db.collection("activityLogs").add({
         userId: callerUid,
@@ -355,11 +427,15 @@ exports.createUserByAdmin = onCall(
         success: true,
         uid: newUid,
         message: existingDocId
-          ? `Lead promoted to ${targetRole}. Password reset email sent.`
-          : `${targetRole} created. Password reset email sent.`,
+          ? `Lead promoted to ${targetRole}.`
+          : `${targetRole} created successfully.`,
       };
     } catch (error) {
       console.error("createUserByAdmin error:", error);
+
+      if (error instanceof HttpsError) {
+        throw error;
+      }
 
       if (error.code === "auth/email-already-exists") {
         throw new HttpsError(

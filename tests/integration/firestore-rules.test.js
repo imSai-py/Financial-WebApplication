@@ -188,9 +188,9 @@ describe('Users Collection — Security Rules', () => {
     }));
   });
 
-  it('SEC-U10: Self-registration forces customer role', async () => {
+  it('SEC-U10: Self-registration is blocked', async () => {
     const db = getDb('self-reg-uid', {});
-    await assertSucceeds(setDoc(doc(db, 'users', 'self-reg-uid'), {
+    await assertFails(setDoc(doc(db, 'users', 'self-reg-uid'), {
       displayName: 'New User', email: 'newuser@test.com',
       role: 'customer', status: 'active',
     }));
@@ -204,9 +204,9 @@ describe('Users Collection — Security Rules', () => {
     }));
   });
 
-  it('SEC-U12: Agent can onboard customer (linked to self)', async () => {
+  it('SEC-U12: Agent CANNOT create customer directly in Firestore', async () => {
     const db = getDb(AGENT_UID, { role: 'agent' });
-    await assertSucceeds(setDoc(doc(db, 'users', 'new-customer-001'), {
+    await assertFails(setDoc(doc(db, 'users', 'new-customer-001'), {
       displayName: 'Onboarded Customer', email: 'onboarded@test.com',
       role: 'customer', status: 'active',
       onboardedByAgent: AGENT_UID,
@@ -219,6 +219,28 @@ describe('Users Collection — Security Rules', () => {
       displayName: 'Fake Admin', email: 'fake@test.com',
       role: 'admin', status: 'active',
       onboardedByAgent: AGENT_UID,
+    }));
+  });
+
+  it('SEC-U13B: Staff CANNOT create customer directly in Firestore', async () => {
+    const db = getDb(STAFF_UID, { role: 'staff' });
+    await assertFails(setDoc(doc(db, 'users', 'staff-created-customer'), {
+      displayName: 'Staff Created Customer',
+      email: 'staffcustomer@test.com',
+      role: 'customer',
+      status: 'active',
+      assignedStaffId: STAFF_UID,
+    }));
+  });
+
+  it('SEC-U13C: Staff CANNOT create customer assigned to another staff member', async () => {
+    const db = getDb(STAFF_UID, { role: 'staff' });
+    await assertFails(setDoc(doc(db, 'users', 'bad-staff-customer'), {
+      displayName: 'Bad Staff Customer',
+      email: 'badstaffcustomer@test.com',
+      role: 'customer',
+      status: 'active',
+      assignedStaffId: 'other-staff',
     }));
   });
 

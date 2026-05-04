@@ -1,18 +1,20 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Briefcase, UserPlus, Eye, Phone, Mail, Calendar,
-  CreditCard, MapPin, Users, Clock, ShieldCheck, Search
+  CreditCard, MapPin, Users, Clock, ShieldCheck, Lock
 } from 'lucide-react';
+import { httpsCallable } from 'firebase/functions';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
-import { getOnboardedCustomers, onboardCustomer } from '../../services/userService';
+import { functions } from '../../config/firebase';
+import { getOnboardedCustomers } from '../../services/userService';
 import DataTable from '../shared/DataTable';
-import StatusBadge from '../shared/StatusBadge';
 import StatCard from '../shared/StatCard';
 import Modal from '../shared/Modal';
 import LoadingSpinner from '../shared/LoadingSpinner';
 import { formatDate, timeAgo } from '../../utils/formatDate';
 import { useIsMobile } from '../../hooks/useMediaQuery';
+import { validators } from '../../utils/validation';
 
 const KYC_COLORS = {
   verified:      { bg: 'rgba(16,185,129,0.15)', text: '#10b981' },
@@ -23,6 +25,7 @@ const KYC_COLORS = {
 
 const EMPTY_FORM = {
   displayName: '', email: '', phone: '',
+  password: '', confirmPassword: '',
   dateOfBirth: '', panNumber: '', aadhaarLastFour: '',
   address: { street: '', city: '', state: '', zip: '' },
 };
@@ -58,6 +61,40 @@ export default function AgentPortfolio() {
     e.preventDefault();
     setSubmitting(true);
     try {
+      const nameErr = validators.required(form.displayName, 'Customer name');
+      if (nameErr) {
+        showToast(nameErr, 'error');
+        setSubmitting(false);
+        return;
+      }
+
+      const emailErr = validators.email(form.email);
+      if (emailErr) {
+        showToast(emailErr, 'error');
+        setSubmitting(false);
+        return;
+      }
+
+      const phoneErr = validators.phone(form.phone);
+      if (phoneErr) {
+        showToast(phoneErr, 'error');
+        setSubmitting(false);
+        return;
+      }
+
+      const passwordErr = validators.password(form.password);
+      if (passwordErr) {
+        showToast(passwordErr, 'error');
+        setSubmitting(false);
+        return;
+      }
+
+      if (form.password !== form.confirmPassword) {
+        showToast('Passwords do not match', 'error');
+        setSubmitting(false);
+        return;
+      }
+
       // Validate PAN format if provided (ABCDE1234F)
       if (form.panNumber && !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(form.panNumber.toUpperCase())) {
         showToast('Invalid PAN format. Expected: ABCDE1234F', 'error');
@@ -72,11 +109,29 @@ export default function AgentPortfolio() {
         return;
       }
 
-      const result = await onboardCustomer(userProfile.uid, form);
-      setCustomers(prev => [result, ...prev]);
+      const createUserByAdmin = httpsCallable(functions, 'createUserByAdmin');
+      await createUserByAdmin({
+        email: form.email.trim(),
+        displayName: form.displayName.trim(),
+        role: 'customer',
+        password: form.password,
+        phone: form.phone?.trim() || null,
+        panNumber: form.panNumber?.trim().toUpperCase() || null,
+        aadhaarLastFour: form.aadhaarLastFour?.trim() || null,
+        dateOfBirth: form.dateOfBirth || null,
+        kycStatus: 'not_submitted',
+        address: {
+          street: form.address.street?.trim() || '',
+          city: form.address.city?.trim() || '',
+          state: form.address.state?.trim() || '',
+          zip: form.address.zip?.trim() || '',
+        },
+      });
+
+      await load();
       setShowOnboard(false);
       setForm(EMPTY_FORM);
-      showToast(`${form.displayName} onboarded successfully!`, 'success');
+      showToast(`${form.displayName} created successfully with a customer login.`, 'success');
     } catch (err) {
       console.error('Onboarding error:', err);
       showToast(err.message || 'Failed to onboard customer', 'error');
@@ -220,7 +275,7 @@ export default function AgentPortfolio() {
           onClick={() => setShowOnboard(true)}
           style={{ minHeight: isMobile ? 44 : undefined }}
         >
-          <UserPlus size={16} /> Onboard Customer
+          <UserPlus size={16} /> Create Customer
         </button>
       </div>
 
@@ -301,7 +356,7 @@ export default function AgentPortfolio() {
       {/* ═══════════════════════════════════════════════════════ */}
       {/* Onboard Customer Modal */}
       {/* ═══════════════════════════════════════════════════════ */}
-      <Modal isOpen={showOnboard} onClose={() => { setShowOnboard(false); setForm(EMPTY_FORM); }} title="Onboard New Customer">
+      <Modal isOpen={showOnboard} onClose={() => { setShowOnboard(false); setForm(EMPTY_FORM); }} title="Create Customer">
         <form onSubmit={handleOnboard}>
           {/* Section: Identity */}
           <div style={{ marginBottom: '1.25rem' }}>
@@ -345,6 +400,42 @@ export default function AgentPortfolio() {
                   onChange={e => setForm(p => ({ ...p, phone: e.target.value }))}
                   placeholder="+91 98765 43210"
                 />
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '0.75rem', marginTop: '0.75rem' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: 'var(--color-text-secondary)', marginBottom: '0.375rem' }}>
+                  Password <span style={{ color: 'var(--color-danger)' }}>*</span>
+                </label>
+                <div style={{ position: 'relative' }}>
+                  <Lock size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
+                  <input
+                    className="input"
+                    type="password"
+                    required
+                    value={form.password}
+                    onChange={e => setForm(p => ({ ...p, password: e.target.value }))}
+                    placeholder="Set a strong password"
+                    style={{ paddingLeft: 38 }}
+                  />
+                </div>
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: 'var(--color-text-secondary)', marginBottom: '0.375rem' }}>
+                  Confirm Password <span style={{ color: 'var(--color-danger)' }}>*</span>
+                </label>
+                <div style={{ position: 'relative' }}>
+                  <Lock size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
+                  <input
+                    className="input"
+                    type="password"
+                    required
+                    value={form.confirmPassword}
+                    onChange={e => setForm(p => ({ ...p, confirmPassword: e.target.value }))}
+                    placeholder="Confirm password"
+                    style={{ paddingLeft: 38 }}
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -449,8 +540,8 @@ export default function AgentPortfolio() {
             marginBottom: '1.25rem', fontSize: '0.75rem', color: 'var(--color-text-secondary)',
             lineHeight: 1.5,
           }}>
-            <strong style={{ color: 'var(--color-primary)' }}>Note:</strong> This creates a customer lead in the system.
-            The customer can later register on the platform to claim their account and set a password.
+            <strong style={{ color: 'var(--color-primary)' }}>Note:</strong> This creates a customer account with an immediate login.
+            Share the password securely and have the customer change it after first use.
           </div>
 
           {/* Actions */}
@@ -459,7 +550,7 @@ export default function AgentPortfolio() {
               Cancel
             </button>
             <button type="submit" className="btn btn-primary" disabled={submitting}>
-              {submitting ? 'Onboarding...' : 'Onboard Customer'}
+              {submitting ? 'Creating...' : 'Create Customer'}
             </button>
           </div>
         </form>

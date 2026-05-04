@@ -7,7 +7,6 @@ import ProtectedRoute from './components/layout/ProtectedRoute';
 import PublicOnlyRoute from './components/layout/PublicOnlyRoute';
 import DashboardLayout from './components/layout/DashboardLayout';
 import LoginForm from './components/auth/LoginForm';
-import RegisterForm from './components/auth/RegisterForm';
 import ForgotPassword from './components/auth/ForgotPassword';
 import DashboardRouter from './components/dashboard/DashboardRouter';
 import UserManagement from './components/users/UserManagement';
@@ -33,9 +32,7 @@ function App() {
             <Route path="/login" element={
               <PublicOnlyRoute><LoginForm /></PublicOnlyRoute>
             } />
-            <Route path="/register" element={
-              <PublicOnlyRoute><RegisterForm /></PublicOnlyRoute>
-            } />
+            <Route path="/register" element={<Navigate to="/login" replace />} />
             <Route path="/forgot-password" element={
               <PublicOnlyRoute><ForgotPassword /></PublicOnlyRoute>
             } />

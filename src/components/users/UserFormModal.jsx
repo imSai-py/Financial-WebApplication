@@ -1,50 +1,45 @@
 import { useState, useEffect } from 'react';
-import { User, Mail, Phone, MapPin, Shield, CreditCard, Calendar, Hash } from 'lucide-react';
+import { User, Mail, Phone, Shield, CreditCard, Calendar, Hash, Lock } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
+import { serverTimestamp } from 'firebase/firestore';
 import Modal from '../shared/Modal';
 import { useAuth } from '../../contexts/AuthContext';
 import { functions } from '../../config/firebase';
-import { createUser, updateUser } from '../../services/userService';
+import { updateUser } from '../../services/userService';
 import { validators } from '../../utils/validation';
 import { useToast } from '../../contexts/ToastContext';
-import { serverTimestamp } from 'firebase/firestore';
 
 const ROLES = ['admin', 'staff', 'customer', 'agent'];
 const KYC_STATUSES = ['not_submitted', 'pending', 'verified', 'rejected'];
 
-const INITIAL_FORM = {
-  displayName: '',
-  email: '',
-  phone: '',
-  role: 'customer',
-  panNumber: '',
-  aadhaarLastFour: '',
-  dateOfBirth: '',
-  kycStatus: 'not_submitted',
-  address: { street: '', city: '', state: '', zip: '' },
-};
+function buildInitialForm(defaultRole = 'customer') {
+  return {
+    displayName: '',
+    email: '',
+    phone: '',
+    role: defaultRole,
+    password: '',
+    confirmPassword: '',
+    panNumber: '',
+    aadhaarLastFour: '',
+    dateOfBirth: '',
+    kycStatus: 'not_submitted',
+    address: { street: '', city: '', state: '', zip: '' },
+  };
+}
 
-/**
- * UserFormModal — Create or Edit a user.
- *
- * Create mode (user === null):
- *   - Customer role → Firestore-only "lead" (no Auth account)
- *   - Admin/Staff/Agent role → calls createUserByAdmin Cloud Function
- *
- * Edit mode (user !== null):
- *   - Updates Firestore doc via updateUser()
- *   - If role changed → calls setUserRole Cloud Function
- */
-export default function UserFormModal({ isOpen, onClose, user, onSuccess }) {
+export default function UserFormModal({ isOpen, onClose, user, leadSource = null, onSuccess, allowedRoles = ROLES, title }) {
   const { userProfile } = useAuth();
   const { showToast } = useToast();
   const isEdit = !!user;
+  const isLeadPromotion = !!leadSource && !isEdit;
+  const createRoleOptions = allowedRoles.length > 0 ? allowedRoles : ['customer'];
+  const defaultCreateRole = createRoleOptions.includes('customer') ? 'customer' : createRoleOptions[0];
 
-  const [form, setForm] = useState(INITIAL_FORM);
+  const [form, setForm] = useState(() => buildInitialForm(defaultCreateRole));
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
 
-  // Populate form when editing
   useEffect(() => {
     if (user) {
       setForm({
@@ -52,6 +47,8 @@ export default function UserFormModal({ isOpen, onClose, user, onSuccess }) {
         email: user.email || '',
         phone: user.phone || '',
         role: user.role || 'customer',
+        password: '',
+        confirmPassword: '',
         panNumber: user.panNumber || '',
         aadhaarLastFour: user.aadhaarLastFour || '',
         dateOfBirth: user.dateOfBirth || '',
@@ -63,23 +60,43 @@ export default function UserFormModal({ isOpen, onClose, user, onSuccess }) {
           zip: user.address?.zip || '',
         },
       });
+    } else if (leadSource) {
+      setForm({
+        displayName: leadSource.displayName || '',
+        email: leadSource.email || '',
+        phone: leadSource.phone || '',
+        role: 'customer',
+        password: '',
+        confirmPassword: '',
+        panNumber: leadSource.panNumber || '',
+        aadhaarLastFour: leadSource.aadhaarLastFour || '',
+        dateOfBirth: leadSource.dateOfBirth || '',
+        kycStatus: leadSource.kycStatus || 'not_submitted',
+        address: {
+          street: leadSource.address?.street || '',
+          city: leadSource.address?.city || '',
+          state: leadSource.address?.state || '',
+          zip: leadSource.address?.zip || '',
+        },
+      });
     } else {
-      setForm(INITIAL_FORM);
+      setForm(buildInitialForm(defaultCreateRole));
     }
     setErrors({});
-  }, [user, isOpen]);
+  }, [user, leadSource, isOpen, defaultCreateRole]);
 
   function handleChange(e) {
     const { name, value } = e.target;
+
     if (name.startsWith('address.')) {
       const key = name.split('.')[1];
-      setForm(prev => ({ ...prev, address: { ...prev.address, [key]: value } }));
+      setForm((prev) => ({ ...prev, address: { ...prev.address, [key]: value } }));
     } else {
-      setForm(prev => ({ ...prev, [name]: value }));
+      setForm((prev) => ({ ...prev, [name]: value }));
     }
-    // Clear error on change
+
     if (errors[name]) {
-      setErrors(prev => ({ ...prev, [name]: null }));
+      setErrors((prev) => ({ ...prev, [name]: null }));
     }
   }
 
@@ -103,6 +120,21 @@ export default function UserFormModal({ isOpen, onClose, user, onSuccess }) {
     const dobErr = validators.dateOfBirth(form.dateOfBirth);
     if (dobErr) errs.dateOfBirth = dobErr;
 
+    if (!isEdit && !createRoleOptions.includes(form.role)) {
+      errs.role = 'You do not have permission to create that user type';
+    }
+
+    if (!isEdit && form.role === 'customer') {
+      const passwordErr = validators.password(form.password);
+      if (passwordErr) errs.password = passwordErr;
+
+      if (!form.confirmPassword) {
+        errs.confirmPassword = 'Confirm password is required';
+      } else if (form.password !== form.confirmPassword) {
+        errs.confirmPassword = 'Passwords do not match';
+      }
+    }
+
     setErrors(errs);
     return Object.keys(errs).length === 0;
   }
@@ -114,18 +146,21 @@ export default function UserFormModal({ isOpen, onClose, user, onSuccess }) {
 
     try {
       if (isEdit) {
-        // ── EDIT MODE ──
         const updateData = {
-          displayName: form.displayName,
-          phone: form.phone,
-          panNumber: form.panNumber || null,
-          aadhaarLastFour: form.aadhaarLastFour || null,
+          displayName: form.displayName.trim(),
+          phone: form.phone?.trim() || null,
+          panNumber: form.panNumber?.trim().toUpperCase() || null,
+          aadhaarLastFour: form.aadhaarLastFour?.trim() || null,
           dateOfBirth: form.dateOfBirth || null,
           kycStatus: form.kycStatus,
-          address: form.address,
+          address: {
+            street: form.address.street?.trim() || '',
+            city: form.address.city?.trim() || '',
+            state: form.address.state?.trim() || '',
+            zip: form.address.zip?.trim() || '',
+          },
         };
 
-        // If admin changed KYC to verified, stamp it
         if (form.kycStatus === 'verified' && user.kycStatus !== 'verified') {
           updateData.kycVerifiedAt = serverTimestamp();
           updateData.kycVerifiedBy = userProfile.uid;
@@ -133,7 +168,6 @@ export default function UserFormModal({ isOpen, onClose, user, onSuccess }) {
 
         await updateUser(user.id, updateData);
 
-        // If role changed, call Cloud Function
         if (form.role !== user.role) {
           const setUserRole = httpsCallable(functions, 'setUserRole');
           await setUserRole({ targetUid: user.id, newRole: form.role });
@@ -141,43 +175,32 @@ export default function UserFormModal({ isOpen, onClose, user, onSuccess }) {
 
         showToast(`Updated ${form.displayName} successfully`, 'success');
       } else {
-        // ── CREATE MODE ──
-        if (form.role === 'customer') {
-          // Create as Firestore-only "lead" — no Auth account
-          const leadId = `lead_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-          await createUser(leadId, {
-            displayName: form.displayName,
-            email: form.email,
-            phone: form.phone,
-            role: 'customer',
-            panNumber: form.panNumber || null,
-            aadhaarLastFour: form.aadhaarLastFour || null,
-            dateOfBirth: form.dateOfBirth || null,
-            kycStatus: form.kycStatus,
-            address: form.address,
-            customerStatus: 'lead',
-            hasAuthAccount: false,
-            promotedAt: null,
-            promotedBy: null,
-            createdBy: userProfile.uid,
-          });
-          showToast(`Created lead "${form.displayName}" successfully`, 'success');
-        } else {
-          // Admin/Staff/Agent — needs Auth account immediately
-          const createUserByAdmin = httpsCallable(functions, 'createUserByAdmin');
-          await createUserByAdmin({
-            email: form.email,
-            displayName: form.displayName,
-            role: form.role,
-            phone: form.phone || null,
-            panNumber: form.panNumber || null,
-            aadhaarLastFour: form.aadhaarLastFour || null,
-            dateOfBirth: form.dateOfBirth || null,
-            kycStatus: form.kycStatus,
-            address: form.address,
-          });
-          showToast(`Created ${form.role} "${form.displayName}" — password reset email sent`, 'success');
-        }
+        const createUserByAdmin = httpsCallable(functions, 'createUserByAdmin');
+        await createUserByAdmin({
+          email: form.email.trim(),
+          displayName: form.displayName.trim(),
+          role: form.role,
+          existingDocId: leadSource?.id || undefined,
+          password: form.role === 'customer' ? form.password : undefined,
+          phone: form.phone?.trim() || null,
+          panNumber: form.panNumber?.trim().toUpperCase() || null,
+          aadhaarLastFour: form.aadhaarLastFour?.trim() || null,
+          dateOfBirth: form.dateOfBirth || null,
+          kycStatus: form.kycStatus,
+          address: {
+            street: form.address.street?.trim() || '',
+            city: form.address.city?.trim() || '',
+            state: form.address.state?.trim() || '',
+            zip: form.address.zip?.trim() || '',
+          },
+        });
+
+        showToast(
+          form.role === 'customer'
+            ? `${leadSource ? 'Activated' : 'Created'} customer "${form.displayName}" with a login account`
+            : `Created ${form.role} "${form.displayName}" successfully`,
+          'success'
+        );
       }
 
       onSuccess?.();
@@ -187,24 +210,29 @@ export default function UserFormModal({ isOpen, onClose, user, onSuccess }) {
       const msg = err?.message || err?.details?.message || 'Operation failed';
       showToast(msg, 'error');
     }
+
     setSaving(false);
   }
 
   const inputStyle = { marginBottom: '1rem' };
   const labelStyle = {
-    display: 'flex', alignItems: 'center', gap: '0.375rem',
-    fontSize: '0.8125rem', fontWeight: 500,
-    color: 'var(--color-text-secondary)', marginBottom: '0.375rem',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.375rem',
+    fontSize: '0.8125rem',
+    fontWeight: 500,
+    color: 'var(--color-text-secondary)',
+    marginBottom: '0.375rem',
   };
   const errorStyle = {
-    fontSize: '0.75rem', color: 'var(--color-danger)',
+    fontSize: '0.75rem',
+    color: 'var(--color-danger)',
     marginTop: '0.25rem',
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title={isEdit ? 'Edit User' : 'Create User'} maxWidth={580}>
+    <Modal isOpen={isOpen} onClose={onClose} title={title || (isEdit ? 'Edit User' : leadSource ? 'Activate Customer' : 'Create User')} maxWidth={580}>
       <form onSubmit={handleSubmit}>
-        {/* ── Identity Section ── */}
         <div style={{ marginBottom: '1.25rem' }}>
           <h4 style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.75rem' }}>
             Identity
@@ -230,20 +258,45 @@ export default function UserFormModal({ isOpen, onClose, user, onSuccess }) {
 
           <div style={inputStyle}>
             <label style={labelStyle}><Shield size={14} /> Role</label>
-            <select className="input" name="role" value={form.role} onChange={handleChange} disabled={isEdit && user?.id === userProfile?.uid}>
-              {ROLES.map(r => (
-                <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>
-              ))}
-            </select>
+            {isEdit || (!isLeadPromotion && createRoleOptions.length > 1) ? (
+              <select className="input" name="role" value={form.role} onChange={handleChange} disabled={isEdit && user?.id === userProfile?.uid}>
+                {(isEdit ? ROLES : createRoleOptions).map((r) => (
+                  <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                className="input"
+                value={createRoleOptions[0].charAt(0).toUpperCase() + createRoleOptions[0].slice(1)}
+                readOnly
+                aria-readonly="true"
+              />
+            )}
+            {errors.role && <p style={errorStyle}>{errors.role}</p>}
             {isEdit && user?.id === userProfile?.uid && (
               <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: '0.25rem' }}>
                 You cannot change your own role
               </p>
             )}
           </div>
+
+          {!isEdit && form.role === 'customer' && (
+            <>
+              <div style={inputStyle}>
+                <label style={labelStyle}><Lock size={14} /> Password *</label>
+                <input className="input" name="password" type="password" value={form.password} onChange={handleChange} placeholder="Set a strong password" />
+                {errors.password && <p style={errorStyle}>{errors.password}</p>}
+              </div>
+
+              <div style={inputStyle}>
+                <label style={labelStyle}><Lock size={14} /> Confirm Password *</label>
+                <input className="input" name="confirmPassword" type="password" value={form.confirmPassword} onChange={handleChange} placeholder="Confirm the password" />
+                {errors.confirmPassword && <p style={errorStyle}>{errors.confirmPassword}</p>}
+              </div>
+            </>
+          )}
         </div>
 
-        {/* ── KYC / Compliance Section ── */}
         <div style={{ marginBottom: '1.25rem' }}>
           <h4 style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.75rem' }}>
             Compliance (KYC)
@@ -271,15 +324,14 @@ export default function UserFormModal({ isOpen, onClose, user, onSuccess }) {
             <div>
               <label style={labelStyle}><Shield size={14} /> KYC Status</label>
               <select className="input" name="kycStatus" value={form.kycStatus} onChange={handleChange}>
-                {KYC_STATUSES.map(s => (
-                  <option key={s} value={s}>{s.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</option>
+                {KYC_STATUSES.map((s) => (
+                  <option key={s} value={s}>{s.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase())}</option>
                 ))}
               </select>
             </div>
           </div>
         </div>
 
-        {/* ── Address Section ── */}
         <div style={{ marginBottom: '1.5rem' }}>
           <h4 style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.75rem' }}>
             Address
@@ -292,22 +344,24 @@ export default function UserFormModal({ isOpen, onClose, user, onSuccess }) {
           </div>
         </div>
 
-        {/* ── Lead Notice ── */}
         {!isEdit && form.role === 'customer' && (
           <div style={{
-            padding: '0.75rem 1rem', borderRadius: 'var(--radius-md)',
-            background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.2)',
-            marginBottom: '1.25rem', fontSize: '0.8125rem', color: 'var(--color-text-secondary)',
+            padding: '0.75rem 1rem',
+            borderRadius: 'var(--radius-md)',
+            background: 'rgba(99,102,241,0.08)',
+            border: '1px solid rgba(99,102,241,0.2)',
+            marginBottom: '1.25rem',
+            fontSize: '0.8125rem',
+            color: 'var(--color-text-secondary)',
           }}>
-            <strong style={{ color: '#f59e0b' }}>Lead Pipeline:</strong> This customer will be created as a data-only lead (no login account). You can promote them later from the Manage Users page.
+            <strong style={{ color: 'var(--color-primary)' }}>Managed Access:</strong> This customer will receive a login account immediately. Share the password securely and ask them to change it after first use.
           </div>
         )}
 
-        {/* ── Submit ── */}
         <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
           <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
           <button type="submit" className="btn btn-primary" disabled={saving}>
-            {saving ? 'Saving...' : isEdit ? 'Save Changes' : form.role === 'customer' ? 'Create Lead' : 'Create User'}
+            {saving ? 'Saving...' : isEdit ? 'Save Changes' : isLeadPromotion ? 'Activate Customer' : form.role === 'customer' ? 'Create Customer' : 'Create User'}
           </button>
         </div>
       </form>
