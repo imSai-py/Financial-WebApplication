@@ -54,6 +54,30 @@ function validatePassword(password) {
   return null;
 }
 
+function mapCreateUserError(error) {
+  if (error instanceof HttpsError) {
+    return error;
+  }
+
+  switch (error?.code) {
+    case "auth/email-already-exists":
+      return new HttpsError(
+        "already-exists",
+        "A user with this email already exists."
+      );
+    case "auth/invalid-password":
+    case "auth/password-does-not-meet-requirements":
+      return new HttpsError(
+        "invalid-argument",
+        error.message || "Password does not meet the required policy."
+      );
+    case "auth/invalid-email":
+      return new HttpsError("invalid-argument", "Valid email is required.");
+    default:
+      return new HttpsError("internal", error?.message || "Failed to create user.");
+  }
+}
+
 async function resolveCallerRole(request) {
   const callerUid = request.auth?.uid;
   let callerRole = request.auth?.token?.role;
@@ -410,18 +434,22 @@ exports.createUserByAdmin = onCall(
 
       // ── Send password reset email ──
       // ── Log to activity logs ──
-      await db.collection("activityLogs").add({
-        userId: callerUid,
-        action: existingDocId
-          ? `Promoted lead "${displayName}" to ${targetRole} (Auth account created)`
-          : `Created ${targetRole} "${displayName}" (${email})`,
-        metadata: {
-          targetUid: newUid,
-          role: targetRole,
-          type: existingDocId ? "lead_promotion" : "user_creation",
-        },
-        createdAt: FieldValue.serverTimestamp(),
-      });
+      try {
+        await db.collection("activityLogs").add({
+          userId: callerUid,
+          action: existingDocId
+            ? `Promoted lead "${displayName}" to ${targetRole} (Auth account created)`
+            : `Created ${targetRole} "${displayName}" (${email})`,
+          metadata: {
+            targetUid: newUid,
+            role: targetRole,
+            type: existingDocId ? "lead_promotion" : "user_creation",
+          },
+          createdAt: FieldValue.serverTimestamp(),
+        });
+      } catch (logError) {
+        console.error("createUserByAdmin activity log error:", logError);
+      }
 
       return {
         success: true,
@@ -431,20 +459,16 @@ exports.createUserByAdmin = onCall(
           : `${targetRole} created successfully.`,
       };
     } catch (error) {
-      console.error("createUserByAdmin error:", error);
-
-      if (error instanceof HttpsError) {
-        throw error;
-      }
-
-      if (error.code === "auth/email-already-exists") {
-        throw new HttpsError(
-          "already-exists",
-          "A user with this email already exists."
-        );
-      }
-
-      throw new HttpsError("internal", error.message || "Failed to create user.");
+      console.error("createUserByAdmin error:", {
+        callerUid,
+        callerRole,
+        targetRole,
+        email,
+        existingDocId: existingDocId || null,
+        code: error?.code || null,
+        message: error?.message || String(error),
+      });
+      throw mapCreateUserError(error);
     }
   }
 );

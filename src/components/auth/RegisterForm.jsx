@@ -2,13 +2,13 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSettings } from '../../contexts/SettingsContext';
-import { TrendingUp, Mail, Lock, User, Phone, Eye, EyeOff, ArrowRight, ShieldAlert } from 'lucide-react';
+import { TrendingUp, Mail, Lock, User, Phone, ArrowRight, ShieldAlert } from 'lucide-react';
+import PasswordField from '../shared/PasswordField';
 
 export default function RegisterForm() {
   const [formData, setFormData] = useState({
     displayName: '', email: '', phone: '', password: '', confirmPassword: '',
   });
-  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const { register } = useAuth();
@@ -157,22 +157,15 @@ export default function RegisterForm() {
               <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: 'var(--color-text-secondary)', marginBottom: '0.375rem' }}>
                 Password
               </label>
-              <div style={{ position: 'relative' }}>
-                <Lock size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
-                <input
-                  type={showPassword ? 'text' : 'password'} name="password"
-                  value={formData.password} onChange={handleChange}
-                  className="input" id="register-password" required
-                  placeholder="Create a password"
-                  style={{ paddingLeft: 38, paddingRight: 42 }}
-                />
-                <button
-                  type="button" onClick={() => setShowPassword(!showPassword)}
-                  style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)', padding: 4 }}
-                >
-                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-              </div>
+              <PasswordField
+                id="register-password"
+                name="password"
+                value={formData.password}
+                onChange={handleChange}
+                required
+                placeholder="Create a password"
+                leftIcon={Lock}
+              />
             </div>
 
             {/* Confirm Password */}
@@ -180,16 +173,15 @@ export default function RegisterForm() {
               <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: 'var(--color-text-secondary)', marginBottom: '0.375rem' }}>
                 Confirm Password
               </label>
-              <div style={{ position: 'relative' }}>
-                <Lock size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
-                <input
-                  type="password" name="confirmPassword"
-                  value={formData.confirmPassword} onChange={handleChange}
-                  className="input" id="register-confirm-password" required
-                  placeholder="Confirm your password"
-                  style={{ paddingLeft: 38 }}
-                />
-              </div>
+              <PasswordField
+                id="register-confirm-password"
+                name="confirmPassword"
+                value={formData.confirmPassword}
+                onChange={handleChange}
+                required
+                placeholder="Confirm your password"
+                leftIcon={Lock}
+              />
             </div>
 
             <button

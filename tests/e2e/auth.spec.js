@@ -118,6 +118,26 @@ test.describe('Criterion 1: Auth & Routing', () => {
     await expect(page.locator('text=Password is required')).toBeVisible();
   });
 
+  test('AUTH-04A: Password visibility toggle works on login', async ({ page }) => {
+    await page.goto('/login');
+    await page.waitForSelector('#login-password', { state: 'visible', timeout: 10000 });
+
+    const passwordInput = page.locator('#login-password');
+    const showToggle = page.locator('button[aria-label="Show password"]');
+
+    await expect(passwordInput).toHaveAttribute('type', 'password');
+    await expect(showToggle).toHaveAttribute('aria-pressed', 'false');
+
+    await showToggle.click();
+    await expect(passwordInput).toHaveAttribute('type', 'text');
+
+    const hideToggle = page.locator('button[aria-label="Hide password"]');
+    await expect(hideToggle).toHaveAttribute('aria-pressed', 'true');
+
+    await hideToggle.click();
+    await expect(passwordInput).toHaveAttribute('type', 'password');
+  });
+
   // â”€â”€â”€ AUTH-04B: Whitespace email validation â”€â”€â”€
   test('AUTH-04B: Invalid email format shows invalid email message', async ({ page }) => {
     await page.goto('/login');

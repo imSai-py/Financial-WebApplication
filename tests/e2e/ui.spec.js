@@ -8,7 +8,7 @@
 import { test, expect } from '@playwright/test';
 
 // ── Credentials ──
-const ADMIN_USER = { email: 'admin@financeflow.com', password: 'Admin@123' };
+const ADMIN_USER = { email: 'admin@dummy.com', password: 'Adminpass123@' };
 
 // ── Helper ──
 async function loginAsAdmin(page) {
@@ -131,5 +131,28 @@ test.describe('Criterion 4: Responsiveness', () => {
     }
 
     await page.locator('button', { hasText: 'Cancel' }).click();
+  });
+
+  test('UI-04: Customer password fields in modal toggle independently', async ({ page }) => {
+    await page.goto('/users');
+
+    const addUserBtn = page.locator('button', { hasText: 'New User' });
+    await expect(addUserBtn).toBeVisible();
+    await addUserBtn.click();
+
+    const passwordInput = page.locator('input[name="password"]');
+    const confirmPasswordInput = page.locator('input[name="confirmPassword"]');
+    const showButtons = page.locator('button[aria-label="Show password"]');
+
+    await expect(passwordInput).toHaveAttribute('type', 'password');
+    await expect(confirmPasswordInput).toHaveAttribute('type', 'password');
+    await expect(showButtons).toHaveCount(2);
+
+    await showButtons.nth(0).click();
+    await expect(passwordInput).toHaveAttribute('type', 'text');
+    await expect(confirmPasswordInput).toHaveAttribute('type', 'password');
+
+    await page.locator('button[aria-label="Show password"]').click();
+    await expect(confirmPasswordInput).toHaveAttribute('type', 'text');
   });
 });

@@ -305,7 +305,38 @@ npm run preview
 firebase emulators:start
 ```
 
-This starts local emulators for Firestore (port 8080), Auth (port 9099), and the Emulator UI (port 4000).
+This starts local emulators for:
+
+- Functions on `localhost:5001`
+- Firestore on `localhost:8081`
+- Auth on `localhost:9099`
+- Emulator UI on `localhost:4000`
+
+The frontend only connects to those local emulators when you explicitly enable it in `.env`.
+
+Recommended local workflow:
+
+```bash
+# .env
+VITE_USE_FIREBASE_EMULATORS=true
+
+# Terminal 1
+firebase emulators:start
+
+# Terminal 2
+npm run seed:emulators
+
+# Terminal 3
+npm run dev
+```
+
+Important notes:
+
+- If `VITE_USE_FIREBASE_EMULATORS=true` but the emulators are not running, Auth/Firestore/Functions requests will fail against localhost.
+- If `VITE_USE_FIREBASE_EMULATORS` is unset or `false`, localhost uses the deployed Firebase backend.
+- Recent Cloud Functions fixes in `functions/index.js` are only reflected locally when the Functions emulator is running, or remotely after a Firebase deploy.
+- For staff customer creation, make sure the local/emulated staff account has a matching Firestore `users/{uid}` document with `role: "staff"` and `status: "active"`.
+- The emulators start with empty Auth and Firestore state unless you import or seed data. Run `npm run seed:emulators` to create local `admin@dummy.com`, `staff@dummy.com`, and `agent@dummy.com` users with matching Firestore profiles and custom claims.
 
 ---
 

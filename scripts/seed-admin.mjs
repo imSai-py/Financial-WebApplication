@@ -3,7 +3,7 @@ import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 
 process.env.FIREBASE_AUTH_EMULATOR_HOST = 'localhost:9099';
-process.env.FIRESTORE_EMULATOR_HOST = 'localhost:8080';
+process.env.FIRESTORE_EMULATOR_HOST = 'localhost:8081';
 
 const app = initializeApp({ projectId: 'financeflow-mgmt-2026' });
 const auth = getAuth(app);

@@ -4,12 +4,12 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { useSettings } from '../../contexts/SettingsContext';
 import { validateForm, validators } from '../../utils/validation';
-import { TrendingUp, Mail, Lock, Eye, EyeOff, ArrowRight } from 'lucide-react';
+import { TrendingUp, Mail, Lock, ArrowRight } from 'lucide-react';
+import PasswordField from '../shared/PasswordField';
 
 export default function LoginForm() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState({});
   const [loading, setLoading] = useState(false);
@@ -185,39 +185,22 @@ export default function LoginForm() {
                   Forgot password?
                 </Link>
               </div>
-              <div style={{ position: 'relative' }}>
-                <Lock size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
-                <input
-                  type={showPassword ? 'text' : 'password'} value={password}
-                  onChange={e => {
-                    setPassword(e.target.value);
-                    if (fieldErrors.password) {
-                      setFieldErrors((prev) => ({ ...prev, password: undefined }));
-                    }
-                  }}
-                  className="input" id="login-password"
-                  placeholder="Enter your password"
-                  aria-invalid={fieldErrors.password ? 'true' : 'false'}
-                  style={{
-                    paddingLeft: 38,
-                    paddingRight: 48,
-                    borderColor: fieldErrors.password ? 'var(--color-danger)' : undefined,
-                  }}
-                />
-                <button
-                  type="button" onClick={() => setShowPassword(!showPassword)}
-                  style={{
-                    position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)',
-                    background: 'none', border: 'none', cursor: 'pointer',
-                    color: 'var(--color-text-muted)',
-                    padding: 8, minWidth: 40, minHeight: 40,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}
-                  aria-label="Toggle password visibility"
-                >
-                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                </button>
-              </div>
+              <PasswordField
+                id="login-password"
+                value={password}
+                onChange={e => {
+                  setPassword(e.target.value);
+                  if (fieldErrors.password) {
+                    setFieldErrors((prev) => ({ ...prev, password: undefined }));
+                  }
+                }}
+                placeholder="Enter your password"
+                aria-invalid={fieldErrors.password ? 'true' : 'false'}
+                leftIcon={Lock}
+                style={{
+                  borderColor: fieldErrors.password ? 'var(--color-danger)' : undefined,
+                }}
+              />
               {fieldErrors.password && (
                 <p style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: 'var(--color-danger)' }}>
                   {fieldErrors.password}

@@ -8,6 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "seed:emulators": "node scripts/seed-emulator-users.mjs",
     "test:e2e": "npx playwright test",
     "test:auth": "npx playwright test tests/e2e/auth.spec.js",
     "test:ui": "npx playwright test tests/e2e/ui.spec.js",

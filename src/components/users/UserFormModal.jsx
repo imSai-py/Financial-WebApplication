@@ -3,9 +3,11 @@ import { User, Mail, Phone, Shield, CreditCard, Calendar, Hash, Lock } from 'luc
 import { httpsCallable } from 'firebase/functions';
 import { serverTimestamp } from 'firebase/firestore';
 import Modal from '../shared/Modal';
+import PasswordField from '../shared/PasswordField';
 import { useAuth } from '../../contexts/AuthContext';
 import { functions } from '../../config/firebase';
 import { updateUser } from '../../services/userService';
+import { getCallableErrorMessage } from '../../utils/callableError';
 import { validators } from '../../utils/validation';
 import { useToast } from '../../contexts/ToastContext';
 
@@ -29,7 +31,7 @@ function buildInitialForm(defaultRole = 'customer') {
 }
 
 export default function UserFormModal({ isOpen, onClose, user, leadSource = null, onSuccess, allowedRoles = ROLES, title }) {
-  const { userProfile } = useAuth();
+  const { userProfile, refreshClaims } = useAuth();
   const { showToast } = useToast();
   const isEdit = !!user;
   const isLeadPromotion = !!leadSource && !isEdit;
@@ -175,6 +177,7 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
 
         showToast(`Updated ${form.displayName} successfully`, 'success');
       } else {
+        await refreshClaims();
         const createUserByAdmin = httpsCallable(functions, 'createUserByAdmin');
         await createUserByAdmin({
           email: form.email.trim(),
@@ -207,7 +210,7 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
       onClose();
     } catch (err) {
       console.error('UserFormModal error:', err);
-      const msg = err?.message || err?.details?.message || 'Operation failed';
+      const msg = getCallableErrorMessage(err, 'Failed to create customer account');
       showToast(msg, 'error');
     }
 
@@ -284,13 +287,23 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
             <>
               <div style={inputStyle}>
                 <label style={labelStyle}><Lock size={14} /> Password *</label>
-                <input className="input" name="password" type="password" value={form.password} onChange={handleChange} placeholder="Set a strong password" />
+                <PasswordField
+                  name="password"
+                  value={form.password}
+                  onChange={handleChange}
+                  placeholder="Set a strong password"
+                />
                 {errors.password && <p style={errorStyle}>{errors.password}</p>}
               </div>
 
               <div style={inputStyle}>
                 <label style={labelStyle}><Lock size={14} /> Confirm Password *</label>
-                <input className="input" name="confirmPassword" type="password" value={form.confirmPassword} onChange={handleChange} placeholder="Confirm the password" />
+                <PasswordField
+                  name="confirmPassword"
+                  value={form.confirmPassword}
+                  onChange={handleChange}
+                  placeholder="Confirm the password"
+                />
                 {errors.confirmPassword && <p style={errorStyle}>{errors.confirmPassword}</p>}
               </div>
             </>
