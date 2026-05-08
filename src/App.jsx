@@ -7,7 +7,6 @@ import ProtectedRoute from './components/layout/ProtectedRoute';
 import PublicOnlyRoute from './components/layout/PublicOnlyRoute';
 import DashboardLayout from './components/layout/DashboardLayout';
 import LoginForm from './components/auth/LoginForm';
-import ForgotPassword from './components/auth/ForgotPassword';
 import DashboardRouter from './components/dashboard/DashboardRouter';
 import UserManagement from './components/users/UserManagement';
 import CustomerList from './components/customers/CustomerList';
@@ -30,12 +29,13 @@ function App() {
           <Routes>
             {/* Public-only routes — redirect authenticated users to /dashboard */}
             <Route path="/login" element={
-              <PublicOnlyRoute><LoginForm /></PublicOnlyRoute>
+              <PublicOnlyRoute><LoginForm key="general-login" mode="general" /></PublicOnlyRoute>
+            } />
+            <Route path="/customer-login" element={
+              <PublicOnlyRoute><LoginForm key="customer-login" mode="customer" /></PublicOnlyRoute>
             } />
             <Route path="/register" element={<Navigate to="/login" replace />} />
-            <Route path="/forgot-password" element={
-              <PublicOnlyRoute><ForgotPassword /></PublicOnlyRoute>
-            } />
+            <Route path="/forgot-password" element={<Navigate to="/login" replace />} />
 
             {/* Protected routes inside DashboardLayout */}
             <Route path="/" element={

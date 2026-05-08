@@ -1,31 +1,42 @@
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { TrendingUp, UserRound, Lock, ArrowRight, ChevronLeft } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { useSettings } from '../../contexts/SettingsContext';
 import { validateForm, validators } from '../../utils/validation';
-import { TrendingUp, Mail, Lock, ArrowRight } from 'lucide-react';
 import PasswordField from '../shared/PasswordField';
 
-export default function LoginForm() {
-  const [email, setEmail] = useState('');
+export default function LoginForm({ mode = 'general' }) {
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState({});
   const [loading, setLoading] = useState(false);
-  const { login } = useAuth();
+  const { login, logout } = useAuth();
   const { showToast } = useToast();
   const { settings } = useSettings();
   const navigate = useNavigate();
+  const isCustomerMode = mode === 'customer';
+
+  const pageTitle = isCustomerMode ? 'Customer login' : 'Welcome back';
+  const pageSubtitle = isCustomerMode
+    ? 'Sign in with your customer credentials to continue'
+    : 'Sign in to your account to continue';
+  const brandCopy = isCustomerMode
+    ? 'Secure customer access for viewing and managing your financial relationship'
+    : 'Secure financial management platform for your business operations';
+  const submitLabel = isCustomerMode ? 'Customer Sign In' : 'Sign In';
+  const helperText = 'Self-sign up is disabled. Customer accounts are created by authorized administrators, staff members, or agents, who provide login credentials directly.';
 
   async function handleSubmit(e) {
     e.preventDefault();
     setError('');
-    const normalizedEmail = email.trim();
+    const normalizedIdentifier = identifier.trim();
     const errors = validateForm(
-      { email: normalizedEmail, password },
+      { identifier: normalizedIdentifier, password },
       {
-        email: [validators.email],
+        identifier: [(value) => validators.required(value, 'Email, username, or phone')],
         password: [(value) => validators.required(value, 'Password')],
       }
     );
@@ -38,9 +49,15 @@ export default function LoginForm() {
     setFieldErrors({});
     setLoading(true);
     try {
-      const profile = await login(normalizedEmail, password);
+      const profile = await login(normalizedIdentifier, password);
 
-      // Welcome toast (Improvement 3) — confirms role for security awareness
+      if (isCustomerMode && profile.role !== 'customer') {
+        await logout();
+        setError('This customer login is only for customer accounts. Staff, agents, and admins should use the main login page.');
+        setFieldErrors({});
+        return;
+      }
+
       const name = profile.displayName || 'User';
       const role = profile.role?.charAt(0).toUpperCase() + profile.role?.slice(1);
       showToast(`Welcome back, ${name}! Signed in as ${role}.`, 'success');
@@ -48,18 +65,20 @@ export default function LoginForm() {
       navigate('/dashboard', { replace: true });
     } catch (err) {
       const map = {
-        'auth/user-not-found': 'No account found with this email.',
+        'auth/user-not-found': 'No account found with those credentials.',
         'auth/wrong-password': 'Incorrect password.',
-        'auth/missing-email': 'Email is required.',
+        'auth/missing-identifier': 'Email, username, or phone is required.',
         'auth/invalid-email': 'Invalid email address.',
         'auth/missing-password': 'Password is required.',
         'auth/too-many-requests': 'Too many attempts. Please try again later.',
-        'auth/invalid-credential': 'Invalid email or password.',
+        'auth/invalid-credential': 'Invalid login credentials.',
+        'auth/invalid-login-identifier': 'Invalid login credentials.',
       };
       setError(map[err.code] || err.message || 'Login failed.');
       setFieldErrors({});
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   return (
@@ -67,14 +86,12 @@ export default function LoginForm() {
       minHeight: '100vh', display: 'flex',
       background: 'var(--color-bg-primary)',
     }}>
-      {/* Left panel - Branding */}
       <div className="login-brand-panel" style={{
         flex: 1, display: 'flex', flexDirection: 'column',
         justifyContent: 'center', alignItems: 'center', padding: '3rem',
         background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 30%, #3730a3 60%, #1e293b 100%)',
         position: 'relative', overflow: 'hidden',
       }}>
-        {/* Animated background orbs */}
         <div style={{
           position: 'absolute', width: 300, height: 300, borderRadius: '50%',
           background: 'radial-gradient(circle, rgba(99,102,241,0.15), transparent)',
@@ -99,18 +116,16 @@ export default function LoginForm() {
             {settings?.appName || 'FinanceFlow'}
           </h1>
           <p style={{ fontSize: '1.0625rem', color: 'rgba(255,255,255,0.65)', lineHeight: 1.6 }}>
-            Secure financial management platform for your business operations
+            {brandCopy}
           </p>
         </div>
       </div>
 
-      {/* Right panel - Form */}
       <div style={{
         flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
         padding: '2rem 1.5rem',
       }}>
         <div style={{ width: '100%', maxWidth: 420 }} className="animate-fade-in">
-          {/* Mobile-only branding (brand panel is hidden on mobile) */}
           <div className="mobile-brand-header" style={{ display: 'none' }}>
             <div style={{
               display: 'flex', alignItems: 'center', gap: '0.75rem',
@@ -131,9 +146,29 @@ export default function LoginForm() {
             </div>
           </div>
 
-          <h2 style={{ fontSize: '1.625rem', fontWeight: 700, marginBottom: '0.375rem' }}>Welcome back</h2>
+          {isCustomerMode && (
+            <div style={{ marginBottom: '1rem' }}>
+              <Link
+                to="/login"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.375rem',
+                  color: 'var(--color-text-secondary)',
+                  textDecoration: 'none',
+                  fontSize: '0.8125rem',
+                  fontWeight: 500,
+                }}
+              >
+                <ChevronLeft size={16} />
+                Back to main login
+              </Link>
+            </div>
+          )}
+
+          <h2 style={{ fontSize: '1.625rem', fontWeight: 700, marginBottom: '0.375rem' }}>{pageTitle}</h2>
           <p style={{ color: 'var(--color-text-secondary)', marginBottom: '2rem', fontSize: '0.9375rem' }}>
-            Sign in to your account to continue
+            {pageSubtitle}
           </p>
 
           {error && (
@@ -149,29 +184,29 @@ export default function LoginForm() {
           <form onSubmit={handleSubmit} noValidate>
             <div style={{ marginBottom: '1.25rem' }}>
               <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: 'var(--color-text-secondary)', marginBottom: '0.375rem' }}>
-                Email Address
+                Email / Username / Phone
               </label>
               <div style={{ position: 'relative' }}>
-                <Mail size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
+                <UserRound size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
                 <input
-                  type="email" value={email} onChange={e => {
-                    setEmail(e.target.value);
-                    if (fieldErrors.email) {
-                      setFieldErrors((prev) => ({ ...prev, email: undefined }));
+                  type="text" value={identifier} onChange={e => {
+                    setIdentifier(e.target.value);
+                    if (fieldErrors.identifier) {
+                      setFieldErrors((prev) => ({ ...prev, identifier: undefined }));
                     }
                   }}
                   className="input" id="login-email"
-                  placeholder="you@example.com"
-                  aria-invalid={fieldErrors.email ? 'true' : 'false'}
+                  placeholder="Enter email, username, or phone"
+                  aria-invalid={fieldErrors.identifier ? 'true' : 'false'}
                   style={{
                     paddingLeft: 38,
-                    borderColor: fieldErrors.email ? 'var(--color-danger)' : undefined,
+                    borderColor: fieldErrors.identifier ? 'var(--color-danger)' : undefined,
                   }}
                 />
               </div>
-              {fieldErrors.email && (
+              {fieldErrors.identifier && (
                 <p style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: 'var(--color-danger)' }}>
-                  {fieldErrors.email}
+                  {fieldErrors.identifier}
                 </p>
               )}
             </div>
@@ -181,9 +216,6 @@ export default function LoginForm() {
                 <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--color-text-secondary)' }}>
                   Password
                 </label>
-                <Link to="/forgot-password" style={{ fontSize: '0.8125rem', color: 'var(--color-primary-400)', textDecoration: 'none' }}>
-                  Forgot password?
-                </Link>
               </div>
               <PasswordField
                 id="login-password"
@@ -217,13 +249,32 @@ export default function LoginForm() {
               {loading ? (
                 <div style={{ width: 20, height: 20, border: '2px solid rgba(255,255,255,0.3)', borderTop: '2px solid white', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }} />
               ) : (
-                <>Sign In <ArrowRight size={18} /></>
+                <>{submitLabel} <ArrowRight size={18} /></>
               )}
             </button>
+
+            {!isCustomerMode && (
+              <Link
+                to="/customer-login"
+                className="btn btn-secondary btn-lg"
+                id="customer-login-link"
+                style={{
+                  width: '100%',
+                  fontSize: '0.9375rem',
+                  marginTop: '0.75rem',
+                  textDecoration: 'none',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                Are you a customer? Login here
+              </Link>
+            )}
           </form>
 
           <p style={{ textAlign: 'center', marginTop: '1.5rem', fontSize: '0.875rem', color: 'var(--color-text-secondary)' }}>
-            Need a customer account? Please contact your administrator, staff member, or agent.
+            {helperText}
           </p>
         </div>
       </div>

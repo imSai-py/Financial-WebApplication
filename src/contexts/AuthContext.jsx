@@ -8,7 +8,8 @@ import {
   setPersistence,
 } from 'firebase/auth';
 import { doc, getDoc, onSnapshot } from 'firebase/firestore';
-import { auth, db } from '../config/firebase';
+import { httpsCallable } from 'firebase/functions';
+import { auth, db, functions } from '../config/firebase';
 import { validators } from '../utils/validation';
 
 const AuthContext = createContext(null);
@@ -19,6 +20,14 @@ const AuthContext = createContext(null);
  * instead of leaving the user staring at a spinner forever (Edge Case B).
  */
 const AUTH_TIMEOUT_MS = 10_000;
+
+function normalizeEmail(value) {
+  return value.trim().toLowerCase();
+}
+
+function looksLikeEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
 
 export function useAuth() {
   const ctx = useContext(AuthContext);
@@ -116,7 +125,9 @@ export function AuthProvider({ children }) {
     ...docData,
     uid: authUser.uid,
     displayName: docData.displayName || authUser.displayName || '',
-    email: docData.email || authUser.email || '',
+    email: Object.prototype.hasOwnProperty.call(docData, 'email')
+      ? (docData.email || '')
+      : (authUser.email || ''),
     role: resolvedRole,
   }), []);
 
@@ -280,12 +291,12 @@ export function AuthProvider({ children }) {
    *
    * Returns the resolved profile object.
    */
-  async function login(email, password) {
-    const normalizedEmail = typeof email === 'string' ? email.trim() : '';
-    const emailError = validators.email(normalizedEmail);
-    if (emailError) {
-      const err = new Error(emailError);
-      err.code = emailError === 'Email is required' ? 'auth/missing-email' : 'auth/invalid-email';
+  async function login(identifier, password) {
+    const normalizedIdentifier = typeof identifier === 'string' ? identifier.trim() : '';
+    const identifierError = validators.required(normalizedIdentifier, 'Email, username, or phone');
+    if (identifierError) {
+      const err = new Error(identifierError);
+      err.code = 'auth/missing-identifier';
       throw err;
     }
 
@@ -300,7 +311,23 @@ export function AuthProvider({ children }) {
     setAuthError(null);
 
     try {
-      const cred = await signInWithEmailAndPassword(auth, normalizedEmail, password);
+      let authEmail = normalizedIdentifier;
+
+      if (looksLikeEmail(normalizedIdentifier)) {
+        authEmail = normalizeEmail(normalizedIdentifier);
+      } else {
+        const resolveCustomerLoginIdentifier = httpsCallable(functions, 'resolveCustomerLoginIdentifier');
+        const response = await resolveCustomerLoginIdentifier({ identifier: normalizedIdentifier });
+        authEmail = response.data?.authEmail;
+
+        if (!authEmail) {
+          const err = new Error('Invalid login credentials.');
+          err.code = 'auth/invalid-login-identifier';
+          throw err;
+        }
+      }
+
+      const cred = await signInWithEmailAndPassword(auth, authEmail, password);
     
     // Force token refresh to pick up latest custom claims (e.g., after role change)
     await cred.user.getIdToken(true);
@@ -365,7 +392,7 @@ export function AuthProvider({ children }) {
    * The onUserCreate Cloud Function also sets the 'customer' custom claim
    * automatically — belt-and-suspenders approach.
    */
-  async function register(email, password, userData) {
+  async function register() {
     throw new Error('Self-service registration is disabled. Contact your administrator, staff member, or agent.');
   }
 

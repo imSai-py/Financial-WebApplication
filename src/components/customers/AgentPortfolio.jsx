@@ -24,7 +24,7 @@ const KYC_COLORS = {
 };
 
 const EMPTY_FORM = {
-  displayName: '', email: '', phone: '',
+  displayName: '', username: '', email: '', phone: '',
   password: '', confirmPassword: '',
   dateOfBirth: '', panNumber: '', aadhaarLastFour: '',
   address: { street: '', city: '', state: '', zip: '' },
@@ -68,9 +68,32 @@ export default function AgentPortfolio() {
         return;
       }
 
-      const emailErr = validators.email(form.email);
+      const emailErr = validators.optionalEmail(form.email);
       if (emailErr) {
         showToast(emailErr, 'error');
+        setSubmitting(false);
+        return;
+      }
+
+      const emailProvided = !!form.email.trim();
+      if (!emailProvided) {
+        const usernameErr = validators.username(form.username);
+        if (usernameErr) {
+          showToast(usernameErr, 'error');
+          setSubmitting(false);
+          return;
+        }
+      } else if (form.username.trim()) {
+        const usernameErr = validators.username(form.username);
+        if (usernameErr) {
+          showToast(usernameErr, 'error');
+          setSubmitting(false);
+          return;
+        }
+      }
+
+      if (!emailProvided && !form.phone.trim()) {
+        showToast('Phone number is required when email is blank', 'error');
         setSubmitting(false);
         return;
       }
@@ -111,8 +134,9 @@ export default function AgentPortfolio() {
 
       const createUserByAdmin = httpsCallable(functions, 'createUserByAdmin');
       await createUserByAdmin({
-        email: form.email.trim(),
+        email: form.email.trim() || undefined,
         displayName: form.displayName.trim(),
+        username: form.username.trim() || undefined,
         role: 'customer',
         password: form.password,
         phone: form.phone?.trim() || null,
@@ -378,13 +402,24 @@ export default function AgentPortfolio() {
                 placeholder="John Doe"
               />
             </div>
+            <div style={{ marginBottom: '0.75rem' }}>
+              <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: 'var(--color-text-secondary)', marginBottom: '0.375rem' }}>
+                Username {form.email.trim() ? '(Optional)' : <span style={{ color: 'var(--color-danger)' }}>*</span>}
+              </label>
+              <input
+                className="input"
+                value={form.username}
+                onChange={e => setForm(p => ({ ...p, username: e.target.value }))}
+                placeholder="customer.username"
+              />
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '0.75rem' }}>
               <div>
                 <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: 'var(--color-text-secondary)', marginBottom: '0.375rem' }}>
-                  Email <span style={{ color: 'var(--color-danger)' }}>*</span>
+                  Email (Optional)
                 </label>
                 <input
-                  className="input" type="email" required
+                  className="input" type="email"
                   value={form.email}
                   onChange={e => setForm(p => ({ ...p, email: e.target.value }))}
                   placeholder="john@example.com"
@@ -392,10 +427,10 @@ export default function AgentPortfolio() {
               </div>
               <div>
                 <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: 'var(--color-text-secondary)', marginBottom: '0.375rem' }}>
-                  Phone <span style={{ color: 'var(--color-danger)' }}>*</span>
+                  Phone {!form.email.trim() ? <span style={{ color: 'var(--color-danger)' }}>*</span> : '(Optional)'}
                 </label>
                 <input
-                  className="input" type="tel" required
+                  className="input" type="tel"
                   value={form.phone}
                   onChange={e => setForm(p => ({ ...p, phone: e.target.value }))}
                   placeholder="+91 98765 43210"
@@ -542,6 +577,7 @@ export default function AgentPortfolio() {
           }}>
             <strong style={{ color: 'var(--color-primary)' }}>Note:</strong> This creates a customer account with an immediate login.
             Share the password securely and have the customer change it after first use.
+            {!form.email.trim() && ' Without an email, username and phone become the customer login identifiers.'}
           </div>
 
           {/* Actions */}

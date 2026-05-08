@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { User, Mail, Phone, Shield, CreditCard, Calendar, Hash, Lock } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
-import { serverTimestamp } from 'firebase/firestore';
 import Modal from '../shared/Modal';
 import PasswordField from '../shared/PasswordField';
 import { useAuth } from '../../contexts/AuthContext';
@@ -18,6 +17,7 @@ const KYC_STATUSES = ['not_submitted', 'pending', 'verified', 'rejected'];
 function buildInitialForm(defaultRole = 'customer') {
   return {
     displayName: '',
+    username: '',
     email: '',
     phone: '',
     role: defaultRole,
@@ -51,6 +51,7 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
     if (user) {
       setForm({
         displayName: user.displayName || '',
+        username: user.username || '',
         email: user.email || '',
         phone: user.phone || '',
         role: user.role || 'customer',
@@ -71,6 +72,7 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
     } else if (leadSource) {
       setForm({
         displayName: leadSource.displayName || '',
+        username: leadSource.username || '',
         email: leadSource.email || '',
         phone: leadSource.phone || '',
         role: 'customer',
@@ -126,14 +128,28 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
 
   function validate() {
     const errs = {};
+    const emailProvided = !!form.email.trim();
     const nameErr = validators.required(form.displayName, 'Full name');
     if (nameErr) errs.displayName = nameErr;
 
-    const emailErr = validators.email(form.email);
+    const emailErr = validators.optionalEmail(form.email);
     if (emailErr) errs.email = emailErr;
 
     const phoneErr = validators.phone(form.phone);
     if (phoneErr) errs.phone = phoneErr;
+
+    if (!isEdit && form.role === 'customer' && !emailProvided) {
+      const usernameErr = validators.username(form.username);
+      if (usernameErr) errs.username = usernameErr;
+
+      const requiredPhoneErr = validators.required(form.phone, 'Phone number');
+      if (requiredPhoneErr) {
+        errs.phone = requiredPhoneErr;
+      }
+    } else if (!isEdit && form.role === 'customer' && form.username.trim()) {
+      const usernameErr = validators.username(form.username);
+      if (usernameErr) errs.username = usernameErr;
+    }
 
     const panErr = validators.panNumber(form.panNumber);
     if (panErr) errs.panNumber = panErr;
@@ -186,8 +202,7 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
         };
 
         if (form.kycStatus === 'verified' && user.kycStatus !== 'verified') {
-          updateData.kycVerifiedAt = serverTimestamp();
-          updateData.kycVerifiedBy = userProfile.uid;
+          updateData.markKycVerified = true;
         }
 
         await updateUser(user.id, updateData);
@@ -209,8 +224,9 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
         await refreshClaims();
         const createUserByAdmin = httpsCallable(functions, 'createUserByAdmin');
         await createUserByAdmin({
-          email: form.email.trim(),
+          email: form.email.trim() || undefined,
           displayName: form.displayName.trim(),
+          username: form.role === 'customer' ? (form.username.trim() || undefined) : undefined,
           role: form.role,
           existingDocId: leadSource?.id || undefined,
           password: form.role === 'customer' ? form.password : undefined,
@@ -277,14 +293,22 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
             {errors.displayName && <p style={errorStyle}>{errors.displayName}</p>}
           </div>
 
+          {!isEdit && form.role === 'customer' && (
+            <div style={inputStyle}>
+              <label style={labelStyle}><User size={14} /> Username {form.email.trim() ? '(Optional)' : '*'}</label>
+              <input className="input" name="username" value={form.username} onChange={handleChange} placeholder="customer.username" />
+              {errors.username && <p style={errorStyle}>{errors.username}</p>}
+            </div>
+          )}
+
           <div style={inputStyle}>
-            <label style={labelStyle}><Mail size={14} /> Email *</label>
+            <label style={labelStyle}><Mail size={14} /> Email (Optional)</label>
             <input className="input" name="email" value={form.email} onChange={handleChange} placeholder="user@example.com" disabled={isEdit} style={isEdit ? { opacity: 0.6 } : {}} />
             {errors.email && <p style={errorStyle}>{errors.email}</p>}
           </div>
 
           <div style={inputStyle}>
-            <label style={labelStyle}><Phone size={14} /> Phone</label>
+            <label style={labelStyle}><Phone size={14} /> Phone {!isEdit && form.role === 'customer' && !form.email.trim() ? '*' : '(Optional)'}</label>
             <input className="input" name="phone" value={form.phone} onChange={handleChange} placeholder="+91 98765 43210" />
             {errors.phone && <p style={errorStyle}>{errors.phone}</p>}
           </div>
@@ -419,6 +443,9 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
             color: 'var(--color-text-secondary)',
           }}>
             <strong style={{ color: 'var(--color-primary)' }}>Managed Access:</strong> This customer will receive a login account immediately. Share the password securely and ask them to change it after first use.
+            {!form.email.trim() && (
+              <span> Because email is blank, username and phone are required for sign-in support.</span>
+            )}
           </div>
         )}
 

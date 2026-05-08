@@ -13,7 +13,7 @@
  */
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
-const { onDocumentUpdated } = require("firebase-functions/v2/firestore");
+const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/firestore");
 const { beforeUserCreated } = require("firebase-functions/v2/identity");
 const { initializeApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
@@ -30,9 +30,151 @@ const VALID_ROLES = ["admin", "staff", "customer", "agent"];
 const REFERRAL_ELIGIBLE_ROLES = ["agent", "customer"];
 const DEFAULT_REFERRAL_LEVELS = [500, 250, 125, 75, 50];
 const MAX_REFERRAL_DEPTH = 5;
+const AUTH_IDENTIFIER_COLLECTION = "authIdentifiers";
+const SYNTHETIC_EMAIL_DOMAIN = "customers.financeflow.local";
+const ALLOWED_KYC_STATUSES = ["not_submitted", "pending", "verified", "rejected"];
 
 function normalizeEmail(email) {
   return email.trim().toLowerCase();
+}
+
+function normalizeOptionalEmail(email) {
+  if (!email || typeof email !== "string" || !email.trim()) return "";
+  return normalizeEmail(email);
+}
+
+function looksLikeEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function normalizeUsername(username) {
+  if (!username || typeof username !== "string") return "";
+  return username.trim().toLowerCase();
+}
+
+function validateUsername(username) {
+  if (!username || typeof username !== "string" || !username.trim()) {
+    return "Username is required.";
+  }
+
+  const normalized = username.trim();
+  if (normalized.length < 4) {
+    return "Username must be at least 4 characters long.";
+  }
+  if (normalized.length > 30) {
+    return "Username must be 30 characters or fewer.";
+  }
+  if (!/^[a-zA-Z0-9._-]+$/.test(normalized)) {
+    return "Username can only contain letters, numbers, dots, underscores, and hyphens.";
+  }
+
+  return null;
+}
+
+function normalizePhone(phone) {
+  if (!phone || typeof phone !== "string") return "";
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length === 12 && digits.startsWith("91")) {
+    return digits.slice(2);
+  }
+  return digits;
+}
+
+function validatePhone(phone) {
+  const normalized = normalizePhone(phone);
+  if (!normalized) return null;
+  if (!/^[6-9]\d{9}$/.test(normalized)) {
+    return "Invalid phone number.";
+  }
+  return null;
+}
+
+function buildSyntheticAuthEmail(uid) {
+  return `customer.${uid.toLowerCase()}@${SYNTHETIC_EMAIL_DOMAIN}`;
+}
+
+function buildAuthIdentifierDocId(kind, normalizedValue) {
+  return `${kind}:${normalizedValue}`;
+}
+
+function buildAuthIdentifierDoc(kind, normalizedValue, { userId, authEmail, role }) {
+  return {
+    kind,
+    normalizedValue,
+    userId,
+    authEmail,
+    role,
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+}
+
+function getCustomerIdentifierEntries(data = {}, userId) {
+  if (data.role !== "customer" || data.hasAuthAccount !== true) {
+    return [];
+  }
+
+  const entries = [];
+  if (data.email) {
+    const normalizedEmail = normalizeOptionalEmail(data.email);
+    if (normalizedEmail) {
+      entries.push(["email", normalizedEmail]);
+    }
+  }
+
+  const normalizedUsername = data.normalizedUsername || normalizeUsername(data.username);
+  if (normalizedUsername) {
+    entries.push(["username", normalizedUsername]);
+  }
+
+  const normalizedPhone = normalizePhone(data.phone || "");
+  if (normalizedPhone) {
+    entries.push(["phone", normalizedPhone]);
+  }
+
+  return entries.map(([kind, normalizedValue]) => ({
+    kind,
+    normalizedValue,
+    docId: buildAuthIdentifierDocId(kind, normalizedValue),
+    doc: buildAuthIdentifierDoc(kind, normalizedValue, {
+      userId,
+      authEmail: data.authEmail,
+      role: data.role,
+    }),
+  }));
+}
+
+async function syncCustomerAuthIdentifiers({ userId, beforeData = null, afterData = null }) {
+  const beforeEntries = getCustomerIdentifierEntries(beforeData || {}, userId);
+  const afterEntries = getCustomerIdentifierEntries(afterData || {}, userId);
+
+  const beforeMap = new Map(beforeEntries.map((entry) => [entry.docId, entry]));
+  const afterMap = new Map(afterEntries.map((entry) => [entry.docId, entry]));
+  const batch = db.batch();
+
+  beforeMap.forEach((entry, docId) => {
+    if (!afterMap.has(docId)) {
+      batch.delete(db.collection(AUTH_IDENTIFIER_COLLECTION).doc(docId));
+    }
+  });
+
+  afterMap.forEach((entry, docId) => {
+    batch.set(
+      db.collection(AUTH_IDENTIFIER_COLLECTION).doc(docId),
+      entry.doc,
+      { merge: true }
+    );
+  });
+
+  await batch.commit();
+}
+
+function sanitizeAddress(address = {}) {
+  return {
+    street: typeof address?.street === "string" ? address.street.trim() : "",
+    city: typeof address?.city === "string" ? address.city.trim() : "",
+    state: typeof address?.state === "string" ? address.state.trim() : "",
+    zip: typeof address?.zip === "string" ? address.zip.trim() : "",
+  };
 }
 
 function validatePassword(password) {
@@ -461,9 +603,6 @@ exports.setUserRole = onCall(
 
     const previousRole = targetDoc.data().role;
 
-    // ── Execute: Set custom claim + update Firestore doc ──
-    let createdAuthUserUid = null;
-
     try {
       // Set Firebase Auth custom claim
       await auth.setCustomUserClaims(targetUid, { role: newRole });
@@ -569,6 +708,248 @@ exports.onRoleFieldChange = onDocumentUpdated(
   }
 );
 
+exports.onCustomerAuthIdentityChange = onDocumentUpdated(
+  {
+    document: "users/{userId}",
+    region: "us-central1",
+  },
+  async (event) => {
+    const beforeData = event.data.before.data();
+    const afterData = event.data.after.data();
+    const userId = event.params.userId;
+    const authIdentityChanged =
+      beforeData.email !== afterData.email
+      || beforeData.phone !== afterData.phone
+      || beforeData.username !== afterData.username
+      || beforeData.normalizedUsername !== afterData.normalizedUsername
+      || beforeData.authEmail !== afterData.authEmail
+      || beforeData.hasAuthAccount !== afterData.hasAuthAccount
+      || beforeData.role !== afterData.role;
+
+    if (!authIdentityChanged) {
+      return null;
+    }
+
+    try {
+      await syncCustomerAuthIdentifiers({ userId, beforeData, afterData });
+      return null;
+    } catch (error) {
+      console.error(`Failed to sync auth identifiers for ${userId}:`, error);
+      return null;
+    }
+  }
+);
+
+exports.resolveCustomerLoginIdentifier = onCall(
+  {
+    region: "us-central1",
+    enforceAppCheck: false,
+  },
+  async (request) => {
+    const rawIdentifier = request.data?.identifier;
+    if (!rawIdentifier || typeof rawIdentifier !== "string" || !rawIdentifier.trim()) {
+      throw new HttpsError("invalid-argument", "Login identifier is required.");
+    }
+
+    const normalizedInput = rawIdentifier.trim();
+    if (looksLikeEmail(normalizedInput)) {
+      return {
+        authEmail: normalizeEmail(normalizedInput),
+        identifierType: "email",
+      };
+    }
+
+    const normalizedUsername = normalizeUsername(normalizedInput);
+    const usernameDoc = await db
+      .collection(AUTH_IDENTIFIER_COLLECTION)
+      .doc(buildAuthIdentifierDocId("username", normalizedUsername))
+      .get();
+
+    if (usernameDoc.exists) {
+      return {
+        authEmail: usernameDoc.data().authEmail,
+        identifierType: "username",
+      };
+    }
+
+    const normalizedPhone = normalizePhone(normalizedInput);
+    if (normalizedPhone) {
+      const phoneDoc = await db
+        .collection(AUTH_IDENTIFIER_COLLECTION)
+        .doc(buildAuthIdentifierDocId("phone", normalizedPhone))
+        .get();
+
+      if (phoneDoc.exists) {
+        return {
+          authEmail: phoneDoc.data().authEmail,
+          identifierType: "phone",
+        };
+      }
+    }
+
+    throw new HttpsError("not-found", "No customer account found for that login identifier.");
+  }
+);
+
+exports.updateUserProfile = onCall(
+  {
+    region: "us-central1",
+    enforceAppCheck: false,
+  },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Sign-in required.");
+    }
+
+    const callerUid = request.auth.uid;
+    const callerRole = await resolveCallerRole(request);
+    const targetUid = request.data?.targetUid;
+    const rawUpdates = request.data?.updates;
+
+    if (!targetUid || typeof targetUid !== "string") {
+      throw new HttpsError("invalid-argument", "Target user id is required.");
+    }
+    if (!rawUpdates || typeof rawUpdates !== "object" || Array.isArray(rawUpdates)) {
+      throw new HttpsError("invalid-argument", "Updates object is required.");
+    }
+
+    const isAdmin = callerRole === "admin";
+    const isSelf = callerUid === targetUid;
+    if (!isAdmin && !isSelf) {
+      throw new HttpsError("permission-denied", "You cannot update this user.");
+    }
+
+    const targetRef = db.collection("users").doc(targetUid);
+    const targetSnap = await targetRef.get();
+    if (!targetSnap.exists) {
+      throw new HttpsError("not-found", "Target user not found.");
+    }
+
+    const beforeData = targetSnap.data();
+    const nextData = { ...beforeData };
+    const updatePayload = {
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+
+    if (Object.prototype.hasOwnProperty.call(rawUpdates, "displayName")) {
+      if (typeof rawUpdates.displayName !== "string" || !rawUpdates.displayName.trim()) {
+        throw new HttpsError("invalid-argument", "Display name is required.");
+      }
+      updatePayload.displayName = rawUpdates.displayName.trim();
+      nextData.displayName = updatePayload.displayName;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(rawUpdates, "phone")) {
+      const phoneValue = typeof rawUpdates.phone === "string" ? rawUpdates.phone : "";
+      const phoneError = validatePhone(phoneValue);
+      if (phoneError) {
+        throw new HttpsError("invalid-argument", phoneError);
+      }
+
+      const normalizedPhone = normalizePhone(phoneValue);
+      if (
+        beforeData.role === "customer"
+        && beforeData.hasAuthAccount === true
+        && !beforeData.email
+        && !normalizedPhone
+      ) {
+        throw new HttpsError(
+          "invalid-argument",
+          "Phone number is required for customers without an email address."
+        );
+      }
+
+      updatePayload.phone = normalizedPhone || null;
+      nextData.phone = updatePayload.phone;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(rawUpdates, "address")) {
+      updatePayload.address = sanitizeAddress(rawUpdates.address);
+      nextData.address = updatePayload.address;
+    }
+
+    if (isAdmin && Object.prototype.hasOwnProperty.call(rawUpdates, "panNumber")) {
+      updatePayload.panNumber =
+        typeof rawUpdates.panNumber === "string" && rawUpdates.panNumber.trim()
+          ? rawUpdates.panNumber.trim().toUpperCase()
+          : null;
+      nextData.panNumber = updatePayload.panNumber;
+    }
+
+    if (isAdmin && Object.prototype.hasOwnProperty.call(rawUpdates, "aadhaarLastFour")) {
+      updatePayload.aadhaarLastFour =
+        typeof rawUpdates.aadhaarLastFour === "string" && rawUpdates.aadhaarLastFour.trim()
+          ? rawUpdates.aadhaarLastFour.trim()
+          : null;
+      nextData.aadhaarLastFour = updatePayload.aadhaarLastFour;
+    }
+
+    if (isAdmin && Object.prototype.hasOwnProperty.call(rawUpdates, "dateOfBirth")) {
+      updatePayload.dateOfBirth =
+        typeof rawUpdates.dateOfBirth === "string" && rawUpdates.dateOfBirth.trim()
+          ? rawUpdates.dateOfBirth.trim()
+          : null;
+      nextData.dateOfBirth = updatePayload.dateOfBirth;
+    }
+
+    if (isAdmin && Object.prototype.hasOwnProperty.call(rawUpdates, "kycStatus")) {
+      if (!ALLOWED_KYC_STATUSES.includes(rawUpdates.kycStatus)) {
+        throw new HttpsError("invalid-argument", "Invalid KYC status.");
+      }
+      updatePayload.kycStatus = rawUpdates.kycStatus;
+      nextData.kycStatus = updatePayload.kycStatus;
+    }
+
+    if (isAdmin && rawUpdates.markKycVerified === true) {
+      updatePayload.kycVerifiedAt = FieldValue.serverTimestamp();
+      updatePayload.kycVerifiedBy = callerUid;
+      nextData.kycVerifiedBy = callerUid;
+    }
+
+    const beforeEntries = getCustomerIdentifierEntries(beforeData, targetUid);
+    const afterEntries = getCustomerIdentifierEntries(nextData, targetUid);
+    const beforeMap = new Map(beforeEntries.map((entry) => [entry.docId, entry]));
+    const afterMap = new Map(afterEntries.map((entry) => [entry.docId, entry]));
+
+    await db.runTransaction(async (transaction) => {
+      for (const entry of afterEntries) {
+        const identifierRef = db.collection(AUTH_IDENTIFIER_COLLECTION).doc(entry.docId);
+        const identifierSnap = await transaction.get(identifierRef);
+
+        if (identifierSnap.exists && identifierSnap.data().userId !== targetUid) {
+          if (entry.kind === "email") {
+            throw new HttpsError("already-exists", "A user with this email already exists.");
+          }
+          if (entry.kind === "username") {
+            throw new HttpsError("already-exists", "That username is already in use.");
+          }
+          if (entry.kind === "phone") {
+            throw new HttpsError("already-exists", "That phone number is already in use.");
+          }
+        }
+      }
+
+      transaction.update(targetRef, updatePayload);
+
+      beforeMap.forEach((entry, docId) => {
+        if (!afterMap.has(docId)) {
+          transaction.delete(db.collection(AUTH_IDENTIFIER_COLLECTION).doc(docId));
+        }
+      });
+
+      afterEntries.forEach((entry) => {
+        transaction.set(
+          db.collection(AUTH_IDENTIFIER_COLLECTION).doc(entry.docId),
+          entry.doc,
+          { merge: true }
+        );
+      });
+    });
+
+    return { success: true };
+  }
+);
+
 // ═══════════════════════════════════════════════════════
 // 4. createUserByAdmin — Admin-Only User/Lead Creation
 // ═══════════════════════════════════════════════════════
@@ -606,24 +987,33 @@ exports.createUserByAdmin = onCall(
     }
 
     // ── Gate 3: Validate input ──
-    const { email, displayName, role, phone, existingDocId,
+    const { email, displayName, username, role, phone, existingDocId,
             panNumber, aadhaarLastFour, dateOfBirth, kycStatus, address, password,
             directReferrerId = "" } = request.data;
-
-    if (!email || typeof email !== "string" || !email.includes("@")) {
-      throw new HttpsError("invalid-argument", "Valid email is required.");
-    }
 
     if (!displayName || typeof displayName !== "string") {
       throw new HttpsError("invalid-argument", "Display name is required.");
     }
 
     const targetRole = role || "customer";
+    const normalizedEmail = normalizeOptionalEmail(email);
+    const normalizedPhone = normalizePhone(phone || "");
+    const trimmedUsername = typeof username === "string" ? username.trim() : "";
+    const normalizedUsername = normalizeUsername(username || "");
     if (!VALID_ROLES.includes(targetRole)) {
       throw new HttpsError(
         "invalid-argument",
         `Invalid role. Must be one of: ${VALID_ROLES.join(", ")}`
       );
+    }
+
+    if (normalizedEmail && !looksLikeEmail(normalizedEmail)) {
+      throw new HttpsError("invalid-argument", "Valid email is required.");
+    }
+
+    const phoneError = validatePhone(phone || "");
+    if (phoneError) {
+      throw new HttpsError("invalid-argument", phoneError);
     }
 
     if (callerRole !== "admin" && targetRole !== "customer") {
@@ -638,11 +1028,28 @@ exports.createUserByAdmin = onCall(
       if (passwordError) {
         throw new HttpsError("invalid-argument", passwordError);
       }
+      if (trimmedUsername) {
+        const usernameError = validateUsername(trimmedUsername);
+        if (usernameError) {
+          throw new HttpsError("invalid-argument", usernameError);
+        }
+      }
+      if (!normalizedEmail) {
+        if (!trimmedUsername) {
+          throw new HttpsError("invalid-argument", "Username is required when email is not provided.");
+        }
+        if (!normalizedPhone) {
+          throw new HttpsError("invalid-argument", "Phone number is required when email is not provided.");
+        }
+      }
+    } else if (!normalizedEmail) {
+      throw new HttpsError("invalid-argument", "Valid email is required.");
     }
+
+    let createdAuthUserUid = null;
 
     try {
       // ── Create Firebase Auth account ──
-      const normalizedEmail = normalizeEmail(email);
       let existingData = null;
       let preservedCreator = null;
       const referralSettings = await getReferralCommissionSettings();
@@ -690,25 +1097,31 @@ exports.createUserByAdmin = onCall(
             referralDepth: 0,
           };
 
+      const newUid = db.collection("users").doc().id;
+      const authEmail = normalizedEmail || buildSyntheticAuthEmail(newUid);
       const userRecord = await auth.createUser({
-        email: normalizedEmail,
+        uid: newUid,
+        email: authEmail,
         displayName: displayName.trim(),
         disabled: false,
         ...(targetRole === "customer" ? { password } : {}),
       });
 
-      const newUid = userRecord.uid;
-      createdAuthUserUid = newUid;
+      const createdUid = userRecord.uid;
+      createdAuthUserUid = createdUid;
 
       // ── Set custom claim ──
-      await auth.setCustomUserClaims(newUid, { role: targetRole });
+      await auth.setCustomUserClaims(createdUid, { role: targetRole });
 
       // ── Create or update Firestore doc ──
       const userData = {
-        uid: newUid,
+        uid: createdUid,
         displayName: displayName.trim(),
-        email: normalizedEmail,
-        phone: phone || null,
+        username: trimmedUsername || null,
+        normalizedUsername: normalizedUsername || "",
+        authEmail,
+        email: normalizedEmail || null,
+        phone: normalizedPhone || null,
         role: targetRole,
         status: "active",
         panNumber: panNumber || null,
@@ -735,7 +1148,7 @@ exports.createUserByAdmin = onCall(
         updatedAt: FieldValue.serverTimestamp(),
       };
 
-      if (existingDocId && existingDocId !== newUid && existingData) {
+      if (existingDocId && existingDocId !== createdUid && existingData) {
         userData.panNumber = userData.panNumber || existingData.panNumber || null;
         userData.aadhaarLastFour = userData.aadhaarLastFour || existingData.aadhaarLastFour || null;
         userData.dateOfBirth = userData.dateOfBirth || existingData.dateOfBirth || null;
@@ -746,6 +1159,11 @@ exports.createUserByAdmin = onCall(
         userData.createdAt = existingData.createdAt || FieldValue.serverTimestamp();
         userData.createdBy = existingData.createdBy || callerUid;
         userData.creator = preservedCreator || userData.creator;
+        userData.username = userData.username || existingData.username || null;
+        userData.normalizedUsername = userData.normalizedUsername || existingData.normalizedUsername || normalizeUsername(existingData.username || "");
+        userData.authEmail = userData.authEmail || existingData.authEmail || authEmail;
+        userData.email = userData.email || existingData.email || null;
+        userData.phone = userData.phone || normalizePhone(existingData.phone || "") || null;
         userData.referrerId = userData.referrerId || existingData.referrerId || "";
         userData.referrerRole = userData.referrerRole || existingData.referrerRole || "";
         userData.referralRootId = userData.referralRootId || existingData.referralRootId || "";
@@ -755,6 +1173,10 @@ exports.createUserByAdmin = onCall(
           : normalizeReferralPath(existingData.referralPath || []);
       }
 
+      const customerIdentifierEntries = targetRole === "customer"
+        ? getCustomerIdentifierEntries(userData, createdUid)
+        : [];
+
       await db.runTransaction(async (transaction) => {
         if (
           targetRole === "customer"
@@ -763,7 +1185,7 @@ exports.createUserByAdmin = onCall(
         ) {
           await queueReferralCommissions({
             transaction,
-            sourceCustomerId: newUid,
+            sourceCustomerId: createdUid,
             directReferrerId: userData.referrerId,
             referralPath: userData.referralPath,
             sourceCustomerName: displayName.trim(),
@@ -771,10 +1193,34 @@ exports.createUserByAdmin = onCall(
           });
         }
 
-        const userRef = db.collection("users").doc(newUid);
-        transaction.set(userRef, userData);
+        for (const entry of customerIdentifierEntries) {
+          const identifierRef = db.collection(AUTH_IDENTIFIER_COLLECTION).doc(entry.docId);
+          const identifierSnap = await transaction.get(identifierRef);
 
-        if (existingDocId && existingDocId !== newUid) {
+          if (identifierSnap.exists && identifierSnap.data().userId !== createdUid) {
+            if (entry.kind === "email") {
+              throw new HttpsError("already-exists", "A user with this email already exists.");
+            }
+            if (entry.kind === "username") {
+              throw new HttpsError("already-exists", "That username is already in use.");
+            }
+            if (entry.kind === "phone") {
+              throw new HttpsError("already-exists", "That phone number is already in use.");
+            }
+          }
+        }
+
+        const userRef = db.collection("users").doc(createdUid);
+        transaction.set(userRef, userData);
+        for (const entry of customerIdentifierEntries) {
+          transaction.set(
+            db.collection(AUTH_IDENTIFIER_COLLECTION).doc(entry.docId),
+            entry.doc,
+            { merge: true }
+          );
+        }
+
+        if (existingDocId && existingDocId !== createdUid) {
           transaction.delete(db.collection("users").doc(existingDocId));
         }
       });
@@ -843,8 +1289,6 @@ exports.createUserByAdmin = onCall(
     }
   }
 );
-
-const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 
 // ═══════════════════════════════════════════════════════
 // 5. onTransactionCreate — Auto-Commission Calculation

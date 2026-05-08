@@ -12,6 +12,14 @@ export const validators = {
     return null;
   },
 
+  /** Optional email validation */
+  optionalEmail(value) {
+    if (!value || !value.trim()) return null;
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(value.trim())) return 'Invalid email format';
+    return null;
+  },
+
   /** Phone validation (Indian format) */
   phone(value) {
     if (!value || !value.trim()) return null; // Optional
@@ -29,6 +37,18 @@ export const validators = {
     return null;
   },
 
+  /** Username validation */
+  username(value) {
+    if (!value || !value.trim()) return 'Username is required';
+    const normalized = value.trim();
+    if (normalized.length < 4) return 'Username must be at least 4 characters';
+    if (normalized.length > 30) return 'Username must be 30 characters or fewer';
+    if (!/^[a-zA-Z0-9._-]+$/.test(normalized)) {
+      return 'Username can use letters, numbers, dots, underscores, and hyphens';
+    }
+    return null;
+  },
+
   /** Password strength */
   password(value) {
     if (!value) return 'Password is required';
@@ -36,7 +56,7 @@ export const validators = {
     if (!/[A-Z]/.test(value)) return 'At least one uppercase letter';
     if (!/[a-z]/.test(value)) return 'At least one lowercase letter';
     if (!/[0-9]/.test(value)) return 'At least one digit';
-    if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(value)) return 'At least one special character';
+    if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(value)) return 'At least one special character';
     return null;
   },
 

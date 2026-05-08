@@ -64,7 +64,9 @@ export default function SettingsPage() {
 
     setForm({
       displayName: userProfile?.displayName || currentUser?.displayName || '',
-      email: userProfile?.email || currentUser?.email || '',
+      email: Object.prototype.hasOwnProperty.call(userProfile || {}, 'email')
+        ? (userProfile?.email || '')
+        : (currentUser?.email || ''),
       phone: userProfile?.phone || '',
       address: {
         street: userProfile?.address?.street || '',
@@ -136,7 +138,7 @@ export default function SettingsPage() {
     const nameErr = validators.required(form.displayName, 'Full name');
     if (nameErr) nextErrors.displayName = nameErr;
 
-    const emailErr = validators.email(form.email);
+    const emailErr = validators.optionalEmail(form.email);
     if (emailErr) nextErrors.email = emailErr;
 
     const phoneErr = validators.phone(form.phone);
@@ -290,7 +292,7 @@ export default function SettingsPage() {
             </div>
             <div>
               <h3 style={{ fontSize: '1.125rem', fontWeight: 700 }}>{userProfile?.displayName}</h3>
-              <p style={{ color: 'var(--color-text-muted)', fontSize: '0.8125rem' }}>{userProfile?.email}</p>
+              <p style={{ color: 'var(--color-text-muted)', fontSize: '0.8125rem' }}>{userProfile?.email || 'No email on file'}</p>
               <span className="badge badge-info" style={{ marginTop: '0.25rem', textTransform: 'capitalize' }}>{userProfile?.role}</span>
             </div>
           </div>
@@ -303,7 +305,7 @@ export default function SettingsPage() {
             </div>
 
             <div style={{ marginBottom: '1rem' }}>
-              <label style={labelStyle}><Mail size={14} /> Email</label>
+              <label style={labelStyle}><Mail size={14} /> Email (Optional)</label>
               <input
                 className="input"
                 name="email"

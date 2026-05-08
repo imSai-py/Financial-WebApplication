@@ -1,8 +1,9 @@
 import { 
-  collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc,
+  collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
   query, where, orderBy, serverTimestamp 
 } from 'firebase/firestore';
-import { db } from '../config/firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from '../config/firebase';
 import { filterCustomerForAgent } from '../utils/rolePermissions';
 
 const COLLECTION = 'users';
@@ -343,7 +344,11 @@ export async function createUser(uid, data) {
  * - onboardedByAgent is immutable for non-admins
  */
 export async function updateUser(id, data) {
-  await updateDoc(doc(db, COLLECTION, id), { ...data, updatedAt: serverTimestamp() });
+  const updateUserProfile = httpsCallable(functions, 'updateUserProfile');
+  await updateUserProfile({
+    targetUid: id,
+    updates: data,
+  });
 }
 
 /**
