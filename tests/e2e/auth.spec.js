@@ -14,13 +14,12 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { TEST_USERS } from '../support/localTestUsers.js';
+import { ensureLoggedOut } from './support/auth.js';
 
 // ── Test Credentials ──
 // Only accounts that are confirmed to exist in production Firebase Auth
-const USERS = {
-  admin: { email: 'admin@financeflow.com', password: 'Admin@123' },
-  staff: { email: 'staff@financeflow.com', password: 'Staff@123' },
-};
+const USERS = TEST_USERS;
 
 // ── Helpers ──
 
@@ -35,19 +34,6 @@ async function loginAs(page, email, password) {
 async function loginAndWait(page, email, password) {
   await loginAs(page, email, password);
   await page.waitForURL('**/dashboard', { timeout: 25000 });
-}
-
-async function ensureLoggedOut(page) {
-  await page.goto('/login');
-  await page.waitForTimeout(1000);
-  // If we ended up on dashboard (already logged in), sign out first
-  if (page.url().includes('/dashboard')) {
-    const signOutBtn = page.locator('button', { hasText: /sign out/i });
-    if (await signOutBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await signOutBtn.click();
-      await page.waitForURL('**/login', { timeout: 10000 });
-    }
-  }
 }
 
 // ═══════════════════════════════════════════════════════

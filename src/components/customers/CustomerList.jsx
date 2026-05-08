@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Users as UsersIcon, Plus, Eye, Edit2, ShieldCheck } from 'lucide-react';
-import { getAllUsers, getUsersByRole, getCustomersByStaff, updateUser } from '../../services/userService';
+import { Users as UsersIcon, Plus, Eye, Edit2, ShieldCheck, CalendarRange, BriefcaseBusiness } from 'lucide-react';
+import { getUsersByRole, getManagedCustomersByStaff } from '../../services/userService';
 import DataTable from '../shared/DataTable';
 import StatusBadge from '../shared/StatusBadge';
 import LoadingSpinner from '../shared/LoadingSpinner';
@@ -20,6 +20,8 @@ const KYC_COLORS = {
 
 const FILTER_TABS = [
   { key: 'all',         label: 'All' },
+  { key: 'created',     label: 'Created by me' },
+  { key: 'assigned',    label: 'Assigned to me' },
   { key: 'lead',        label: 'Leads' },
   { key: 'kyc_pending', label: 'KYC Pending' },
   { key: 'verified',    label: 'Verified' },
@@ -36,6 +38,7 @@ export default function CustomerList() {
   const [editModal, setEditModal] = useState({ open: false, user: null });
   const [createModal, setCreateModal] = useState(false);
   const [filter, setFilter] = useState('all');
+  const [dateFilters, setDateFilters] = useState({ startDate: '', endDate: '' });
 
   const isStaff = userProfile?.role === 'staff';
 
@@ -44,7 +47,7 @@ export default function CustomerList() {
       // Role-aware data source: Admin sees all, Staff sees only assigned
       const users = isAdmin
         ? await getUsersByRole('customer')
-        : await getCustomersByStaff(userProfile.uid);
+        : await getManagedCustomersByStaff(userProfile.uid);
       setCustomers(users);
     } catch (err) {
       console.error('Error loading customers:', err);
@@ -56,13 +59,50 @@ export default function CustomerList() {
 
   // Filter logic
   const filtered = customers.filter(c => {
+    const createdAt = c.createdAt?.toDate ? c.createdAt.toDate() : new Date(c.createdAt || 0);
+    const startDate = dateFilters.startDate ? new Date(`${dateFilters.startDate}T00:00:00`) : null;
+    const endDate = dateFilters.endDate ? new Date(`${dateFilters.endDate}T23:59:59.999`) : null;
+
+    if (startDate && createdAt < startDate) return false;
+    if (endDate && createdAt > endDate) return false;
     if (filter === 'all') return true;
+    if (filter === 'created') return c.managementScope === 'created' || c.managementScope === 'created_assigned';
+    if (filter === 'assigned') return c.managementScope === 'assigned' || c.managementScope === 'created_assigned';
     if (filter === 'lead') return c.customerStatus === 'lead';
     if (filter === 'kyc_pending') return c.kycStatus === 'pending' || c.kycStatus === 'not_submitted';
     if (filter === 'verified') return c.kycStatus === 'verified';
     if (filter === 'active') return c.customerStatus === 'active' || (!c.customerStatus && c.status === 'active');
     return true;
   });
+
+  function OwnershipBadge({ customer }) {
+    if (!isStaff) return null;
+
+    const styles = {
+      created_assigned: { bg: 'rgba(59,130,246,0.15)', text: '#60a5fa' },
+      created: { bg: 'rgba(16,185,129,0.15)', text: '#34d399' },
+      assigned: { bg: 'rgba(245,158,11,0.15)', text: '#fbbf24' },
+      other: { bg: 'rgba(100,116,139,0.15)', text: '#cbd5e1' },
+    };
+    const palette = styles[customer.managementScope] || styles.other;
+
+    return (
+      <span style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '0.25rem',
+        padding: '0.2rem 0.5rem',
+        borderRadius: 'var(--radius-full)',
+        fontSize: '0.6875rem',
+        fontWeight: 600,
+        background: palette.bg,
+        color: palette.text,
+      }}>
+        <BriefcaseBusiness size={12} />
+        {customer.managementScopeLabel || 'Managed'}
+      </span>
+    );
+  }
 
   function KycBadge({ status }) {
     const colors = KYC_COLORS[status] || KYC_COLORS.not_submitted;
@@ -113,9 +153,21 @@ export default function CustomerList() {
           <div>
             <p style={{ fontWeight: 500, fontSize: '0.8125rem' }}>{row.displayName || 'Unnamed'}</p>
             <p style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>{row.email}</p>
+            {isStaff && (
+              <div style={{ marginTop: '0.25rem' }}>
+                <OwnershipBadge customer={row} />
+              </div>
+            )}
           </div>
         </div>
       ),
+    },
+    {
+      header: 'Ownership',
+      accessor: 'managementScopeLabel',
+      exportValue: (row) => row.managementScopeLabel || 'Managed',
+      render: (row) => <OwnershipBadge customer={row} />,
+      hideOnMobile: true,
     },
     {
       header: 'Pipeline',
@@ -142,6 +194,7 @@ export default function CustomerList() {
     {
       header: 'Joined',
       accessor: 'createdAt',
+      exportValue: (row) => formatDate(row.createdAt),
       render: (row) => <span style={{ fontSize: '0.8125rem' }}>{formatDate(row.createdAt)}</span>,
       hideOnMobile: true,
     },
@@ -152,7 +205,7 @@ export default function CustomerList() {
           <button className="btn btn-ghost btn-sm" onClick={() => setViewCustomer(row)} title="View" style={{ padding: '0.375rem' }}>
             <Eye size={14} />
           </button>
-          {isAdmin && (
+          {(isAdmin || isStaff) && (
             <button className="btn btn-ghost btn-sm" onClick={() => setEditModal({ open: true, user: row })} title="Edit" style={{ padding: '0.375rem' }}>
               <Edit2 size={14} />
             </button>
@@ -204,8 +257,50 @@ export default function CustomerList() {
         ))}
       </div>
 
+      <div className="glass-card" style={{
+        padding: isMobile ? '0.75rem' : '1rem',
+        marginBottom: '1rem',
+      }}>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr',
+          gap: '0.75rem',
+        }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+              <CalendarRange size={14} /> Start Date
+            </span>
+            <input
+              className="input"
+              type="date"
+              value={dateFilters.startDate}
+              onChange={(e) => setDateFilters((prev) => ({ ...prev, startDate: e.target.value }))}
+            />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+              <CalendarRange size={14} /> End Date
+            </span>
+            <input
+              className="input"
+              type="date"
+              value={dateFilters.endDate}
+              onChange={(e) => setDateFilters((prev) => ({ ...prev, endDate: e.target.value }))}
+            />
+          </label>
+        </div>
+      </div>
+
       <div className="glass-card" style={{ padding: isMobile ? '0.75rem' : '1.25rem' }}>
-        <DataTable columns={columns} data={filtered} searchPlaceholder="Search customers..." emptyMessage="No customers found" />
+        <DataTable
+          columns={columns}
+          data={filtered}
+          searchPlaceholder="Search customers..."
+          emptyMessage="No customers found"
+          exportable
+          exportFormats={['csv', 'xlsx']}
+          exportFilename={isStaff ? 'staff-customers' : 'customers'}
+        />
       </div>
 
       {/* View Detail Modal */}

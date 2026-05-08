@@ -10,9 +10,14 @@
     "preview": "vite preview",
     "seed:emulators": "node scripts/seed-emulator-users.mjs",
     "test:e2e": "npx playwright test",
+    "test:tracking:e2e": "npx playwright test tests/e2e/customer-activity.spec.js",
+    "test:staff:e2e": "npx playwright test tests/e2e/staff-operations.spec.js",
     "test:auth": "npx playwright test tests/e2e/auth.spec.js",
     "test:ui": "npx playwright test tests/e2e/ui.spec.js",
     "test:rules": "npx vitest run tests/integration/firestore-rules.test.js",
+    "test:staff:integration": "npx vitest run tests/integration/staff-history.test.js",
+    "test:tracking:integration": "npx vitest run tests/integration/customer-traceability.test.js tests/integration/customer-activity-validation.test.js",
+    "test:tracking": "npm run test:tracking:integration && npm run test:tracking:e2e",
     "test:all": "npm run test:rules && npm run test:auth && npm run test:ui"
   },
   "dependencies": {
@@ -22,7 +27,8 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-router-dom": "^7.13.2",
-    "recharts": "^3.8.1"
+    "recharts": "^3.8.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

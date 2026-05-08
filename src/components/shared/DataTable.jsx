@@ -39,6 +39,7 @@ export default function DataTable({
   selectable = false,
   onSelectionChange,
   exportable = false,
+  exportFormats = ['csv'],
   exportFilename = 'export',
   stickyHeader = true,
   rowActions,
@@ -50,6 +51,7 @@ export default function DataTable({
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState(new Set());
+  const [exportingFormat, setExportingFormat] = useState(null);
   const isMobile = useIsMobile();
   const perPage = perPageProp || (isMobile ? 8 : 10);
 
@@ -132,11 +134,23 @@ export default function DataTable({
   }
 
   // ── CSV Export ──
-  function handleExport() {
-    const headers = columns.filter(c => c.accessor !== '__actions').map(c => c.header);
+  function getExportColumns() {
+    return columns.filter(c => c.accessor && c.accessor !== '__actions');
+  }
+
+  function getExportValue(row, column) {
+    if (typeof column.exportValue === 'function') {
+      return column.exportValue(row);
+    }
+    return row[column.accessor] ?? '';
+  }
+
+  function handleExportCsv() {
+    const exportColumns = getExportColumns();
+    const headers = exportColumns.map(c => c.header);
     const rows = filtered.map(row =>
-      columns.filter(c => c.accessor !== '__actions').map(c => {
-        const val = row[c.accessor] ?? '';
+      exportColumns.map(c => {
+        const val = getExportValue(row, c);
         // Escape commas and quotes
         const str = String(val);
         return str.includes(',') || str.includes('"') ? `"${str.replace(/"/g, '""')}"` : str;
@@ -150,6 +164,28 @@ export default function DataTable({
     a.download = `${exportFilename}_${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function handleExportXlsx() {
+    setExportingFormat('xlsx');
+    try {
+      const XLSX = await import('xlsx');
+      const exportColumns = getExportColumns();
+      const rows = filtered.map((row) => {
+        const exportRow = {};
+        exportColumns.forEach((column) => {
+          exportRow[column.header] = getExportValue(row, column);
+        });
+        return exportRow;
+      });
+
+      const worksheet = XLSX.utils.json_to_sheet(rows);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Records');
+      XLSX.writeFile(workbook, `${exportFilename}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    } finally {
+      setExportingFormat(null);
+    }
   }
 
   // ── Skeleton Rows ──
@@ -305,13 +341,24 @@ export default function DataTable({
                 {selectedIds.size} selected
               </span>
             )}
-            {exportable && (
+            {exportable && exportFormats.includes('csv') && (
               <button
-                onClick={handleExport}
+                onClick={handleExportCsv}
                 className="btn btn-secondary btn-sm"
                 style={{ whiteSpace: 'nowrap' }}
               >
                 <Download size={14} /> Export CSV
+              </button>
+            )}
+            {exportable && exportFormats.includes('xlsx') && (
+              <button
+                onClick={handleExportXlsx}
+                className="btn btn-secondary btn-sm"
+                style={{ whiteSpace: 'nowrap' }}
+                disabled={exportingFormat === 'xlsx'}
+              >
+                {exportingFormat === 'xlsx' ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                Export XLSX
               </button>
             )}
           </div>

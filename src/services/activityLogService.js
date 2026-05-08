@@ -1,10 +1,30 @@
 import { 
-  collection, getDocs, addDoc, query, orderBy, limit, serverTimestamp 
+  collection, getDocs, addDoc, query, orderBy, limit, serverTimestamp, where
 } from 'firebase/firestore';
 import { db } from '../config/firebase';
 
 const COLLECTION = 'activityLogs';
 const col = collection(db, COLLECTION);
+
+function getTimestampValue(log) {
+  return log.timestamp || log.createdAt || null;
+}
+
+export function normalizeActivityLog(logDoc) {
+  const log = { ...logDoc };
+  const metadata = log.metadata || {};
+
+  return {
+    ...log,
+    details: log.details || metadata.details || '',
+    targetType: log.targetType || metadata.targetType || log.resourceType || metadata.resourceType || '',
+    targetId: log.targetId || metadata.targetId || log.resourceId || metadata.resourceId || metadata.targetUid || '',
+    timestamp: getTimestampValue(log),
+    createdAt: getTimestampValue(log),
+    action: log.action || metadata.type || 'activity',
+    metadata,
+  };
+}
 
 /**
  * Get activity logs — Admin only.
@@ -14,7 +34,19 @@ export async function getActivityLogs(maxItems = 100) {
   const snap = await getDocs(
     query(col, orderBy('timestamp', 'desc'), limit(maxItems))
   );
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  return snap.docs.map(d => normalizeActivityLog({ id: d.id, ...d.data() }));
+}
+
+export async function getActivityLogsByUser(userId, maxItems = 100) {
+  const snap = await getDocs(
+    query(
+      col,
+      where('userId', '==', userId),
+      orderBy('timestamp', 'desc'),
+      limit(maxItems)
+    )
+  );
+  return snap.docs.map(d => normalizeActivityLog({ id: d.id, ...d.data() }));
 }
 
 /**
@@ -40,6 +72,8 @@ export async function logActivity({ userId, action, details, resourceType = '', 
       details,
       resourceType,
       resourceId,
+      targetType: resourceType,
+      targetId: resourceId,
       timestamp: serverTimestamp(),
     });
   } catch (err) {

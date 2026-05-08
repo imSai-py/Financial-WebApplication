@@ -3,6 +3,8 @@ import { CheckSquare, Plus, Clock, AlertTriangle, LayoutList, LayoutGrid, Chevro
 import { useAuth } from '../../contexts/AuthContext';
 import { getTasks, getTasksByAssignee, createTask, updateTask } from '../../services/taskService';
 import { getAllUsers } from '../../services/userService';
+import { logActivity } from '../../services/activityLogService';
+import { getStaffHistoryBundle } from '../../services/staffHistoryService';
 import DataTable from '../shared/DataTable';
 import StatusBadge from '../shared/StatusBadge';
 import Modal from '../shared/Modal';
@@ -32,7 +34,9 @@ export default function TaskList() {
   const [newTask, setNewTask] = useState({ title: '', description: '', assignedTo: '', priority: 'medium', dueDate: '' });
   const [creating, setCreating] = useState(false);
   const [assignableUsers, setAssignableUsers] = useState([]);
+  const [recentWorkActivity, setRecentWorkActivity] = useState([]);
   const isMobile = useIsMobile();
+  const isStaff = userProfile?.role === 'staff';
 
   useEffect(() => {
     async function load() {
@@ -42,12 +46,15 @@ export default function TaskList() {
         if (isAdmin) {
           const users = await getAllUsers();
           setAssignableUsers(users.filter(u => u.role !== 'customer'));
+        } else if (userProfile?.role === 'staff') {
+          const history = await getStaffHistoryBundle(userProfile.uid);
+          setRecentWorkActivity(history.timeline.filter((item) => ['task', 'transaction'].includes(item.category)).slice(0, 12));
         }
       } catch (err) { console.error(err); }
       setLoading(false);
     }
     load();
-  }, [userProfile.uid, isAdmin]);
+  }, [userProfile.uid, userProfile?.role, isAdmin]);
 
   async function handleCreate(e) {
     e.preventDefault();
@@ -55,6 +62,13 @@ export default function TaskList() {
     try {
       const task = await createTask({ ...newTask, assignedBy: userProfile.uid }, userProfile);
       setTasks(prev => [task, ...prev]);
+      await logActivity({
+        userId: userProfile.uid,
+        action: 'task.create',
+        details: `Created task "${newTask.title}"`,
+        resourceType: 'task',
+        resourceId: task.id,
+      });
       setShowCreate(false);
       setNewTask({ title: '', description: '', assignedTo: '', priority: 'medium', dueDate: '' });
     } catch (err) { console.error(err); }
@@ -70,6 +84,13 @@ export default function TaskList() {
       }
       await updateTask(taskId, updateData);
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...updateData } : t));
+      await logActivity({
+        userId: userProfile.uid,
+        action: 'task.status_update',
+        details: `Updated task status to ${newStatus}`,
+        resourceType: 'task',
+        resourceId: taskId,
+      });
     } catch (err) { console.error(err); }
   }
 
@@ -348,10 +369,44 @@ export default function TaskList() {
       {/* Content */}
       {viewMode === 'list' ? (
         <div className="glass-card" style={{ padding: isMobile ? '0.75rem' : '1.25rem' }}>
-          <DataTable columns={columns} data={tasks} searchPlaceholder="Search tasks..." />
+          <DataTable
+            columns={columns}
+            data={tasks}
+            searchPlaceholder="Search tasks..."
+            exportable
+            exportFormats={['csv', 'xlsx']}
+            exportFilename={isAdmin ? 'tasks' : 'staff-tasks'}
+          />
         </div>
       ) : (
         <KanbanBoard />
+      )}
+
+      {isStaff && (
+        <div className="glass-card" style={{ padding: isMobile ? '0.75rem' : '1.25rem', marginTop: '1rem' }}>
+          <h3 style={{ fontSize: '0.9375rem', fontWeight: 700, marginBottom: '1rem' }}>
+            Recent Work Activity
+          </h3>
+          <DataTable
+            columns={[
+              { header: 'Activity', accessor: 'title' },
+              { header: 'Details', accessor: 'description' },
+              { header: 'Type', accessor: 'category' },
+              {
+                header: 'When',
+                accessor: 'timestamp',
+                exportValue: (row) => formatDate(row.timestamp),
+                render: (row) => <span style={{ fontSize: '0.8125rem' }}>{timeAgo(row.timestamp)}</span>,
+              },
+            ]}
+            data={recentWorkActivity}
+            searchPlaceholder="Search work history..."
+            emptyMessage="No work activity available yet."
+            exportable
+            exportFormats={['csv', 'xlsx']}
+            exportFilename="staff-work-history"
+          />
+        </div>
       )}
 
       {/* Create Task Modal */}

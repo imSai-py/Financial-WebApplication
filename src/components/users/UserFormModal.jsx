@@ -7,6 +7,7 @@ import PasswordField from '../shared/PasswordField';
 import { useAuth } from '../../contexts/AuthContext';
 import { functions } from '../../config/firebase';
 import { updateUser } from '../../services/userService';
+import { logActivity } from '../../services/activityLogService';
 import { getCallableErrorMessage } from '../../utils/callableError';
 import { validators } from '../../utils/validation';
 import { useToast } from '../../contexts/ToastContext';
@@ -35,6 +36,7 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
   const { showToast } = useToast();
   const isEdit = !!user;
   const isLeadPromotion = !!leadSource && !isEdit;
+  const canManageRoles = userProfile?.role === 'admin';
   const createRoleOptions = allowedRoles.length > 0 ? allowedRoles : ['customer'];
   const defaultCreateRole = createRoleOptions.includes('customer') ? 'customer' : createRoleOptions[0];
 
@@ -169,6 +171,13 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
         }
 
         await updateUser(user.id, updateData);
+        await logActivity({
+          userId: userProfile.uid,
+          action: 'customer.update',
+          details: `Updated profile for "${form.displayName}"`,
+          resourceType: 'user',
+          resourceId: user.id,
+        });
 
         if (form.role !== user.role) {
           const setUserRole = httpsCallable(functions, 'setUserRole');
@@ -261,7 +270,14 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
 
           <div style={inputStyle}>
             <label style={labelStyle}><Shield size={14} /> Role</label>
-            {isEdit || (!isLeadPromotion && createRoleOptions.length > 1) ? (
+            {isEdit && !canManageRoles ? (
+              <input
+                className="input"
+                value={form.role.charAt(0).toUpperCase() + form.role.slice(1)}
+                readOnly
+                aria-readonly="true"
+              />
+            ) : isEdit || (!isLeadPromotion && createRoleOptions.length > 1) ? (
               <select className="input" name="role" value={form.role} onChange={handleChange} disabled={isEdit && user?.id === userProfile?.uid}>
                 {(isEdit ? ROLES : createRoleOptions).map((r) => (
                   <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>

@@ -3,7 +3,7 @@ import { ArrowLeftRight, CheckSquare, Users, Clock, TrendingUp, AlertTriangle } 
 import { useAuth } from '../../contexts/AuthContext';
 import { getTransactions } from '../../services/transactionService';
 import { getTasksByAssignee } from '../../services/taskService';
-import { getCustomersByStaff } from '../../services/userService';
+import { getManagedCustomersByStaff } from '../../services/userService';
 import StatCard from '../shared/StatCard';
 import StatusBadge from '../shared/StatusBadge';
 import LoadingSpinner from '../shared/LoadingSpinner';
@@ -23,7 +23,7 @@ export default function StaffDashboard() {
         const [transactions, tasks, customers] = await Promise.all([
           getTransactions(userProfile),              // SCOPED: staffId || assignedStaffId
           getTasksByAssignee(userProfile.uid),        // SCOPED: assignedTo == uid
-          getCustomersByStaff(userProfile.uid),       // SCOPED: assignedStaffId == uid
+          getManagedCustomersByStaff(userProfile.uid),
         ]);
         setData({ transactions, tasks, customers });
       } catch (err) {

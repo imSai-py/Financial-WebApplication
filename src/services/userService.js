@@ -8,6 +8,166 @@ import { filterCustomerForAgent } from '../utils/rolePermissions';
 const COLLECTION = 'users';
 const col = collection(db, COLLECTION);
 
+function toMillis(timestamp) {
+  if (!timestamp) return 0;
+  if (typeof timestamp?.toMillis === 'function') return timestamp.toMillis();
+  if (typeof timestamp?.toDate === 'function') return timestamp.toDate().getTime();
+  const parsed = new Date(timestamp).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function getUserLabel(user) {
+  if (!user) return 'Unknown';
+  return user.displayName || user.email || 'Unknown';
+}
+
+function createUnknownSnapshot(id, role = 'unknown') {
+  if (!id) return null;
+  return { id, name: 'Unknown', role };
+}
+
+function dedupeById(records = []) {
+  const merged = new Map();
+  records.forEach((record) => {
+    if (!record) return;
+    merged.set(record.id || record.uid, record);
+  });
+  return Array.from(merged.values());
+}
+
+function normalizeManagedCustomerScope(customer, staffId) {
+  const createdByStaff = customer.createdBy === staffId || customer.creator?.id === staffId;
+  const assignedToStaff = customer.assignedStaffId === staffId;
+
+  if (createdByStaff && assignedToStaff) {
+    return {
+      key: 'created_assigned',
+      label: 'Created by me + Assigned to me',
+    };
+  }
+
+  if (createdByStaff) {
+    return {
+      key: 'created',
+      label: 'Created by me',
+    };
+  }
+
+  if (assignedToStaff) {
+    return {
+      key: 'assigned',
+      label: 'Assigned to me',
+    };
+  }
+
+  return {
+    key: 'other',
+    label: 'Other',
+  };
+}
+
+function deriveLegacyCreator(customer, userMap) {
+  if (customer.creator?.id) {
+    return {
+      id: customer.creator.id,
+      name: customer.creator.name || 'Unknown',
+      role: customer.creator.role || 'unknown',
+      timestamp: customer.creator.timestamp || customer.createdAt || null,
+    };
+  }
+
+  if (customer.createdBy) {
+    const creatorUser = userMap.get(customer.createdBy);
+    const inferredRole =
+      creatorUser?.role
+      || (customer.createdBy === customer.onboardedByAgent ? 'agent' : null)
+      || (customer.createdBy === customer.assignedStaffId ? 'staff' : null)
+      || 'unknown';
+
+    return {
+      id: customer.createdBy,
+      name: getUserLabel(creatorUser),
+      role: inferredRole,
+      timestamp: customer.createdAt || null,
+    };
+  }
+
+  if (customer.onboardedByAgent) {
+    const agentUser = userMap.get(customer.onboardedByAgent);
+    return {
+      id: customer.onboardedByAgent,
+      name: getUserLabel(agentUser),
+      role: agentUser?.role || 'agent',
+      timestamp: customer.createdAt || null,
+    };
+  }
+
+  if (customer.assignedStaffId) {
+    const staffUser = userMap.get(customer.assignedStaffId);
+    return {
+      id: customer.assignedStaffId,
+      name: getUserLabel(staffUser),
+      role: staffUser?.role || 'staff',
+      timestamp: customer.createdAt || null,
+    };
+  }
+
+  return {
+    id: 'Unknown',
+    name: 'Unknown',
+    role: 'unknown',
+    timestamp: customer.createdAt || null,
+  };
+}
+
+export function selectAdminCustomerTraceability(users = []) {
+  const userMap = new Map(users.map(user => [user.id || user.uid, user]));
+
+  return users
+    .filter(user => user.role === 'customer')
+    .map((customer) => {
+      const creator = deriveLegacyCreator(customer, userMap);
+      const staffUser = customer.assignedStaffId ? userMap.get(customer.assignedStaffId) : null;
+      const agentUser = customer.onboardedByAgent ? userMap.get(customer.onboardedByAgent) : null;
+
+      return {
+        id: customer.id || customer.uid,
+        customerId: customer.id || customer.uid,
+        customerName: customer.displayName || 'Unnamed Customer',
+        customerEmail: customer.email || '',
+        creatorId: creator?.id || 'Unknown',
+        creatorName: creator?.name || 'Unknown',
+        creatorRole: creator?.role || 'unknown',
+        creatorTimestamp: creator?.timestamp || customer.createdAt || null,
+        createdAtMs: toMillis(creator?.timestamp || customer.createdAt),
+        linkedStaffId: customer.assignedStaffId || '',
+        linkedStaffName: getUserLabel(staffUser),
+        linkedAgentId: customer.onboardedByAgent || '',
+        linkedAgentName: getUserLabel(agentUser),
+        linkedStaffDisplay: customer.assignedStaffId
+          ? `${getUserLabel(staffUser)} (${customer.assignedStaffId})`
+          : '—',
+        linkedAgentDisplay: customer.onboardedByAgent
+          ? `${getUserLabel(agentUser)} (${customer.onboardedByAgent})`
+          : '—',
+      };
+    })
+    .sort((a, b) => b.createdAtMs - a.createdAtMs);
+}
+
+export function selectStaffManagedCustomers(customers = [], staffId) {
+  return dedupeById(customers)
+    .map((customer) => {
+      const scope = normalizeManagedCustomerScope(customer, staffId);
+      return {
+        ...customer,
+        managementScope: scope.key,
+        managementScopeLabel: scope.label,
+      };
+    })
+    .sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
+}
+
 /**
  * Get all users — Admin only.
  * Returns all users sorted by creation date.
@@ -79,6 +239,28 @@ export async function getCustomersByStaff(staffId) {
     orderBy('createdAt', 'desc')
   ));
   return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+export async function getCustomersCreatedByStaff(staffId) {
+  const snap = await getDocs(query(
+    col,
+    where('role', '==', 'customer'),
+    where('createdBy', '==', staffId),
+    orderBy('createdAt', 'desc')
+  ));
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+export async function getManagedCustomersByStaff(staffId) {
+  const [assignedCustomers, createdCustomers] = await Promise.all([
+    getCustomersByStaff(staffId),
+    getCustomersCreatedByStaff(staffId),
+  ]);
+
+  return selectStaffManagedCustomers(
+    [...assignedCustomers, ...createdCustomers],
+    staffId
+  );
 }
 
 /**
@@ -194,6 +376,12 @@ export async function onboardCustomer(agentUid, customerData) {
     hasAuthAccount: false,
     createdBy: agentUid,
     createdAt: serverTimestamp(),
+    creator: {
+      id: agentUid,
+      name: customerData.createdByName || customerData.creatorName || 'Unknown Agent',
+      role: 'agent',
+      timestamp: serverTimestamp(),
+    },
     updatedAt: serverTimestamp(),
   };
 

@@ -10,6 +10,10 @@ import LoadingSpinner from '../shared/LoadingSpinner';
 import usePageTitle from '../../hooks/usePageTitle';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import { formatAmount } from '../../utils/formatCurrency';
+import DataTable from '../shared/DataTable';
+import { getUsersByRole } from '../../services/userService';
+import { getStaffHistoryBundle } from '../../services/staffHistoryService';
+import { formatDateTime } from '../../utils/formatDate';
 
 function formatCurrency(amount) {
   if (amount >= 10000000) return `₹${(amount / 10000000).toFixed(2)} Cr`;
@@ -246,12 +250,22 @@ function AdminReportsView({ isMobile }) {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [staffUsers, setStaffUsers] = useState([]);
+  const [selectedStaffId, setSelectedStaffId] = useState('');
+  const [selectedStaffHistory, setSelectedStaffHistory] = useState(null);
 
   useEffect(() => {
     async function load() {
       try {
-        const data = await generateReport();
+        const [data, staff] = await Promise.all([
+          generateReport(),
+          getUsersByRole('staff'),
+        ]);
         setReport(data);
+        setStaffUsers(staff);
+        if (staff[0]?.id) {
+          setSelectedStaffId(staff[0].id);
+        }
       } catch (err) {
         console.error('Report error:', err);
         setError(err.message);
@@ -260,6 +274,21 @@ function AdminReportsView({ isMobile }) {
     }
     load();
   }, []);
+
+  useEffect(() => {
+    if (!selectedStaffId) return;
+
+    async function loadStaffHistory() {
+      try {
+        const history = await getStaffHistoryBundle(selectedStaffId);
+        setSelectedStaffHistory(history);
+      } catch (err) {
+        console.error('Staff history report error:', err);
+      }
+    }
+
+    loadStaffHistory();
+  }, [selectedStaffId]);
 
   if (loading) return <LoadingSpinner text="Generating report..." />;
   if (error) return (
@@ -423,6 +452,74 @@ function AdminReportsView({ isMobile }) {
         <ReportStatCard icon={Users} label="Customers" value={totals.customers} color="#10b981" />
         <ReportStatCard icon={UserPlus} label="Active Leads" value={totals.leads} color="#f59e0b" />
         <ReportStatCard icon={Users} label="Agents" value={totals.agents} color="#a78bfa" />
+      </div>
+
+      <div className="glass-card" style={{ padding: '1.25rem', marginTop: '1.5rem' }}>
+        <div style={{
+          display: 'flex',
+          flexDirection: isMobile ? 'column' : 'row',
+          alignItems: isMobile ? 'stretch' : 'center',
+          justifyContent: 'space-between',
+          gap: '0.75rem',
+          marginBottom: '1rem',
+        }}>
+          <div>
+            <h3 style={{ fontSize: '0.9375rem', fontWeight: 700 }}>Staff History Monitor</h3>
+            <p style={{ color: 'var(--color-text-muted)', fontSize: '0.8125rem' }}>
+              Review a staff member&apos;s managed customers, work activity, and timeline.
+            </p>
+          </div>
+          <select className="input" value={selectedStaffId} onChange={(e) => setSelectedStaffId(e.target.value)} style={{ maxWidth: isMobile ? '100%' : 320 }}>
+            {staffUsers.map((staff) => (
+              <option key={staff.id} value={staff.id}>
+                {staff.displayName || staff.email}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {selectedStaffHistory && (
+          <>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(4, 1fr)',
+              gap: '0.75rem',
+              marginBottom: '1rem',
+            }}>
+              {[
+                ['Managed Customers', selectedStaffHistory.summary.managedCustomers],
+                ['Created Customers', selectedStaffHistory.summary.createdCustomers],
+                ['Tasks Assigned', selectedStaffHistory.summary.tasksAssigned],
+                ['Activity Events', selectedStaffHistory.summary.activityEvents],
+              ].map(([label, value]) => (
+                <div key={label} style={{ padding: '0.875rem', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-secondary)' }}>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>{label}</p>
+                  <p style={{ fontSize: '1.125rem', fontWeight: 700, marginTop: '0.25rem' }}>{value}</p>
+                </div>
+              ))}
+            </div>
+
+            <DataTable
+              columns={[
+                { header: 'Activity', accessor: 'title' },
+                { header: 'Details', accessor: 'description' },
+                { header: 'Category', accessor: 'category' },
+                {
+                  header: 'When',
+                  accessor: 'timestamp',
+                  exportValue: (row) => formatDateTime(row.timestamp),
+                  render: (row) => <span style={{ fontSize: '0.8125rem' }}>{formatDateTime(row.timestamp)}</span>,
+                },
+              ]}
+              data={selectedStaffHistory.timeline.slice(0, 50)}
+              searchPlaceholder="Search staff timeline..."
+              emptyMessage="No staff history available."
+              exportable
+              exportFormats={['csv', 'xlsx']}
+              exportFilename="admin-staff-history"
+            />
+          </>
+        )}
       </div>
     </>
   );

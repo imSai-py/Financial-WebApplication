@@ -93,6 +93,123 @@ async function resolveCallerRole(request) {
   return callerRole;
 }
 
+async function getUserProfileSnapshot(userId, fallbackRole = null) {
+  if (!userId) return null;
+
+  const userDoc = await db.collection("users").doc(userId).get();
+  if (!userDoc.exists) {
+    return {
+      id: userId,
+      name: "Unknown",
+      role: fallbackRole || "unknown",
+    };
+  }
+
+  const data = userDoc.data();
+  return {
+    id: userId,
+    name: data.displayName || data.email || "Unknown",
+    role: data.role || fallbackRole || "unknown",
+  };
+}
+
+async function resolveCallerIdentity(request) {
+  const callerUid = request.auth?.uid;
+  const callerSnapshot = await getUserProfileSnapshot(
+    callerUid,
+    request.auth?.token?.role || null
+  );
+
+  if (!callerSnapshot) {
+    throw new HttpsError("not-found", "Caller profile not found.");
+  }
+
+  return callerSnapshot;
+}
+
+function buildCreatorSnapshot(snapshot) {
+  return {
+    id: snapshot.id,
+    name: snapshot.name || "Unknown",
+    role: snapshot.role || "unknown",
+    timestamp: FieldValue.serverTimestamp(),
+  };
+}
+
+async function writeActivityLog({
+  userId,
+  action,
+  details = "",
+  targetType = "",
+  targetId = "",
+  metadata = {},
+}) {
+  await db.collection("activityLogs").add({
+    userId,
+    action,
+    details,
+    targetType,
+    targetId,
+    metadata: {
+      ...metadata,
+      details,
+      targetType,
+      targetId,
+    },
+    timestamp: FieldValue.serverTimestamp(),
+    createdAt: FieldValue.serverTimestamp(),
+  });
+}
+
+async function synthesizeLegacyCreator(existingData, callerSnapshot) {
+  if (existingData?.creator?.id) {
+    return existingData.creator;
+  }
+
+  if (existingData?.createdBy) {
+    let inferredRole = null;
+    if (existingData.createdBy === existingData.onboardedByAgent) {
+      inferredRole = "agent";
+    } else if (existingData.createdBy === existingData.assignedStaffId) {
+      inferredRole = "staff";
+    }
+
+    const creatorSnapshot = await getUserProfileSnapshot(
+      existingData.createdBy,
+      inferredRole
+    );
+
+    return {
+      ...creatorSnapshot,
+      timestamp: existingData.createdAt || FieldValue.serverTimestamp(),
+    };
+  }
+
+  if (existingData?.onboardedByAgent) {
+    const creatorSnapshot = await getUserProfileSnapshot(
+      existingData.onboardedByAgent,
+      "agent"
+    );
+    return {
+      ...creatorSnapshot,
+      timestamp: existingData.createdAt || FieldValue.serverTimestamp(),
+    };
+  }
+
+  if (existingData?.assignedStaffId) {
+    const creatorSnapshot = await getUserProfileSnapshot(
+      existingData.assignedStaffId,
+      "staff"
+    );
+    return {
+      ...creatorSnapshot,
+      timestamp: existingData.createdAt || FieldValue.serverTimestamp(),
+    };
+  }
+
+  return buildCreatorSnapshot(callerSnapshot);
+}
+
 // ═══════════════════════════════════════════════════════
 // 1. setUserRole — Admin-Only Callable Function
 // ═══════════════════════════════════════════════════════
@@ -180,16 +297,17 @@ exports.setUserRole = onCall(
       });
 
       // Log the role change in activity logs
-      await db.collection("activityLogs").add({
+      await writeActivityLog({
         userId: callerUid,
-        action: `Changed role of user ${targetUid} from '${previousRole}' to '${newRole}'`,
+        action: "role_change",
+        details: `Changed role of user ${targetUid} from '${previousRole}' to '${newRole}'`,
+        targetType: "user",
+        targetId: targetUid,
         metadata: {
-          targetUid,
           previousRole,
           newRole,
           type: "role_change",
         },
-        createdAt: FieldValue.serverTimestamp(),
       });
 
       return {
@@ -300,6 +418,7 @@ exports.createUserByAdmin = onCall(
     // ── Gate 2: Must be admin ──
     const callerUid = request.auth.uid;
     const callerRole = await resolveCallerRole(request);
+    const callerSnapshot = await resolveCallerIdentity(request);
 
     if (!["admin", "staff", "agent"].includes(callerRole)) {
       throw new HttpsError(
@@ -346,6 +465,7 @@ exports.createUserByAdmin = onCall(
       // ── Create Firebase Auth account ──
       const normalizedEmail = normalizeEmail(email);
       let existingData = null;
+      let preservedCreator = null;
 
       if (existingDocId) {
         const existingDoc = await db.collection("users").doc(existingDocId).get();
@@ -354,6 +474,7 @@ exports.createUserByAdmin = onCall(
         }
 
         existingData = existingDoc.data();
+        preservedCreator = await synthesizeLegacyCreator(existingData, callerSnapshot);
 
         if (targetRole !== "customer") {
           throw new HttpsError(
@@ -412,6 +533,7 @@ exports.createUserByAdmin = onCall(
         address: address || { street: "", city: "", state: "", zip: "" },
         createdBy: callerUid,
         createdAt: FieldValue.serverTimestamp(),
+        creator: buildCreatorSnapshot(callerSnapshot),
         updatedAt: FieldValue.serverTimestamp(),
       };
 
@@ -425,6 +547,7 @@ exports.createUserByAdmin = onCall(
         userData.address = existingData.address || userData.address;
         userData.createdAt = existingData.createdAt || FieldValue.serverTimestamp();
         userData.createdBy = existingData.createdBy || callerUid;
+        userData.creator = preservedCreator || userData.creator;
 
         await db.collection("users").doc(existingDocId).delete();
       }
@@ -435,17 +558,19 @@ exports.createUserByAdmin = onCall(
       // ── Send password reset email ──
       // ── Log to activity logs ──
       try {
-        await db.collection("activityLogs").add({
+        await writeActivityLog({
           userId: callerUid,
-          action: existingDocId
+          action: existingDocId ? "lead_promotion" : "user_creation",
+          details: existingDocId
             ? `Promoted lead "${displayName}" to ${targetRole} (Auth account created)`
             : `Created ${targetRole} "${displayName}" (${email})`,
+          targetType: "user",
+          targetId: newUid,
           metadata: {
-            targetUid: newUid,
             role: targetRole,
             type: existingDocId ? "lead_promotion" : "user_creation",
+            createdByRole: callerRole,
           },
-          createdAt: FieldValue.serverTimestamp(),
         });
       } catch (logError) {
         console.error("createUserByAdmin activity log error:", logError);

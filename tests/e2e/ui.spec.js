@@ -6,9 +6,10 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { TEST_USERS } from '../support/localTestUsers.js';
 
 // ── Credentials ──
-const ADMIN_USER = { email: 'admin@dummy.com', password: 'Adminpass123@' };
+const ADMIN_USER = TEST_USERS.admin;
 
 // ── Helper ──
 async function loginAsAdmin(page) {

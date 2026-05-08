@@ -1,15 +1,16 @@
-import { useState, useEffect } from 'react';
-import { Users, ArrowLeftRight, IndianRupee, CheckSquare, TrendingUp, AlertCircle, Clock, Activity } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { Users, ArrowLeftRight, IndianRupee, CheckSquare, TrendingUp, Clock, Activity, UserRoundSearch } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { getAllUsers } from '../../services/userService';
+import { getAllUsers, selectAdminCustomerTraceability } from '../../services/userService';
 import { getTransactions } from '../../services/transactionService';
 import { getTasks } from '../../services/taskService';
 import { getActivityLogs } from '../../services/activityLogService';
 import StatCard from '../shared/StatCard';
 import StatusBadge from '../shared/StatusBadge';
 import LoadingSpinner from '../shared/LoadingSpinner';
+import DataTable from '../shared/DataTable';
 import { formatAmount } from '../../utils/formatCurrency';
-import { timeAgo } from '../../utils/formatDate';
+import { formatDateTime, timeAgo } from '../../utils/formatDate';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 
@@ -19,29 +20,183 @@ export default function AdminDashboard() {
   const { userProfile } = useAuth();
   const [stats, setStats] = useState({ users: [], transactions: [], tasks: [], logs: [] });
   const [loading, setLoading] = useState(true);
+  const [traceFilters, setTraceFilters] = useState({
+    creatorRole: 'all',
+    creatorId: 'all',
+    staffId: 'all',
+    agentId: 'all',
+    startDate: '',
+    endDate: '',
+  });
   const isMobile = useIsMobile();
 
   useEffect(() => {
     async function load() {
+      if (!userProfile) return;
+
       try {
         const [users, transactions, tasks, logs] = await Promise.all([
-          getAllUsers(), getTransactions(), getTasks(), getActivityLogs(),
+          getAllUsers(),
+          getTransactions(userProfile),
+          getTasks(userProfile),
+          getActivityLogs(),
         ]);
         setStats({ users, transactions, tasks, logs });
       } catch (err) {
         console.error('Dashboard load error:', err);
+        setStats({ users: [], transactions: [], tasks: [], logs: [] });
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     }
     load();
-  }, []);
-
-  if (loading) return <LoadingSpinner text="Loading dashboard..." />;
+  }, [userProfile]);
 
   const { users, transactions, tasks, logs } = stats;
+  const customerTraceability = useMemo(
+    () => selectAdminCustomerTraceability(users),
+    [users]
+  );
   const totalRevenue = transactions.filter(t => t.status === 'completed').reduce((sum, t) => sum + (t.amount || 0), 0);
   const pendingTasks = tasks.filter(t => t.status === 'pending').length;
   const roleCounts = users.reduce((acc, u) => { acc[u.role] = (acc[u.role] || 0) + 1; return acc; }, {});
+
+  const creatorOptions = useMemo(() => {
+    const unique = new Map();
+    customerTraceability.forEach((row) => {
+      if (traceFilters.creatorRole !== 'all' && row.creatorRole !== traceFilters.creatorRole) return;
+      if (row.creatorId && row.creatorId !== 'Unknown') {
+        unique.set(row.creatorId, `${row.creatorName} (${row.creatorId})`);
+      }
+    });
+    return Array.from(unique.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  }, [customerTraceability, traceFilters.creatorRole]);
+
+  const staffOptions = useMemo(() => {
+    const unique = new Map();
+    customerTraceability.forEach((row) => {
+      if (row.linkedStaffId) {
+        unique.set(row.linkedStaffId, `${row.linkedStaffName} (${row.linkedStaffId})`);
+      }
+    });
+    return Array.from(unique.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  }, [customerTraceability]);
+
+  const agentOptions = useMemo(() => {
+    const unique = new Map();
+    customerTraceability.forEach((row) => {
+      if (row.linkedAgentId) {
+        unique.set(row.linkedAgentId, `${row.linkedAgentName} (${row.linkedAgentId})`);
+      }
+    });
+    return Array.from(unique.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  }, [customerTraceability]);
+
+  const filteredTraceability = useMemo(() => {
+    const startMs = traceFilters.startDate ? new Date(`${traceFilters.startDate}T00:00:00`).getTime() : null;
+    const endMs = traceFilters.endDate ? new Date(`${traceFilters.endDate}T23:59:59.999`).getTime() : null;
+
+    return customerTraceability.filter((row) => {
+      if (traceFilters.creatorRole !== 'all' && row.creatorRole !== traceFilters.creatorRole) return false;
+      if (traceFilters.creatorId !== 'all' && row.creatorId !== traceFilters.creatorId) return false;
+      if (traceFilters.staffId !== 'all' && row.linkedStaffId !== traceFilters.staffId) return false;
+      if (traceFilters.agentId !== 'all' && row.linkedAgentId !== traceFilters.agentId) return false;
+      if (startMs && row.createdAtMs < startMs) return false;
+      if (endMs && row.createdAtMs > endMs) return false;
+      return true;
+    });
+  }, [customerTraceability, traceFilters]);
+
+  const traceEmptyMessage = useMemo(() => {
+    const hasActiveFilters = Object.values(traceFilters).some((value) => value && value !== 'all');
+    if (!hasActiveFilters) {
+      return 'No customer creation records are available yet.';
+    }
+
+    const roleCreatorConflict =
+      traceFilters.creatorRole !== 'all' &&
+      traceFilters.creatorId !== 'all' &&
+      !creatorOptions.some(([id]) => id === traceFilters.creatorId);
+
+    if (roleCreatorConflict) {
+      return 'No matching records. The selected creator does not belong to the chosen creator role.';
+    }
+
+    return 'No customer creation records match the current filters.';
+  }, [creatorOptions, traceFilters]);
+
+  const traceColumns = useMemo(() => [
+    {
+      header: 'Customer Name',
+      accessor: 'customerName',
+      render: (row) => (
+        <div>
+          <p style={{ fontWeight: 600, fontSize: '0.8125rem' }}>{row.customerName}</p>
+          <p style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>{row.customerEmail || '—'}</p>
+        </div>
+      ),
+    },
+    {
+      header: 'Customer ID',
+      accessor: 'customerId',
+      render: (row) => <span style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>{row.customerId}</span>,
+    },
+    {
+      header: 'Created By',
+      accessor: 'creatorName',
+      render: (row) => (
+        <div>
+          <p style={{ fontWeight: 500, fontSize: '0.8125rem' }}>{row.creatorName}</p>
+          <p style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)', fontFamily: 'monospace' }}>{row.creatorId}</p>
+        </div>
+      ),
+    },
+    {
+      header: 'Creator Role',
+      accessor: 'creatorRole',
+      render: (row) => (
+        <span style={{ textTransform: 'capitalize', fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+          {row.creatorRole}
+        </span>
+      ),
+    },
+    {
+      header: 'Assigned Staff',
+      accessor: 'linkedStaffDisplay',
+      render: (row) => <span style={{ fontSize: '0.75rem' }}>{row.linkedStaffDisplay}</span>,
+      hideOnMobile: true,
+    },
+    {
+      header: 'Assigned Agent',
+      accessor: 'linkedAgentDisplay',
+      render: (row) => <span style={{ fontSize: '0.75rem' }}>{row.linkedAgentDisplay}</span>,
+      hideOnMobile: true,
+    },
+    {
+      header: 'Date & Time Created',
+      accessor: 'createdAtMs',
+      render: (row) => (
+        <div>
+          <p style={{ fontSize: '0.8125rem' }}>{formatDateTime(row.creatorTimestamp)}</p>
+          <p style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>{timeAgo(row.creatorTimestamp)}</p>
+        </div>
+      ),
+    },
+  ], []);
+
+  function updateTraceFilter(name, value) {
+    setTraceFilters((prev) => ({ ...prev, [name]: value }));
+  }
+
+  useEffect(() => {
+    if (traceFilters.creatorId === 'all') return;
+    const creatorStillAvailable = creatorOptions.some(([id]) => id === traceFilters.creatorId);
+    if (!creatorStillAvailable) {
+      setTraceFilters((prev) => ({ ...prev, creatorId: 'all' }));
+    }
+  }, [creatorOptions, traceFilters.creatorId]);
+
+  if (loading) return <LoadingSpinner text="Loading dashboard..." />;
 
   // Monthly chart data aggregation
   const monthlyPerf = {};
@@ -229,6 +384,123 @@ export default function AdminDashboard() {
             ))
           )}
         </div>
+      </div>
+
+      <div
+        className="glass-card"
+        data-testid="customer-traceability-section"
+        style={{ padding: isMobile ? '1rem' : '1.25rem', marginTop: '1rem' }}
+      >
+        <div style={{
+          display: 'flex',
+          flexDirection: isMobile ? 'column' : 'row',
+          justifyContent: 'space-between',
+          alignItems: isMobile ? 'flex-start' : 'center',
+          gap: '0.75rem',
+          marginBottom: '1rem',
+        }}>
+          <div>
+            <h3 style={{ fontSize: '0.9375rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <UserRoundSearch size={16} /> Customer Creation Traceability
+            </h3>
+            <p style={{ color: 'var(--color-text-muted)', fontSize: '0.8125rem', marginTop: '0.25rem' }}>
+              Track who created each customer and any assigned staff or agent ownership.
+            </p>
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+            {filteredTraceability.length} of {customerTraceability.length} customers
+          </div>
+        </div>
+
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, minmax(0, 1fr))',
+          gap: '0.75rem',
+          marginBottom: '1rem',
+        }}>
+          <select
+            aria-label="Filter by creator role"
+            className="input"
+            value={traceFilters.creatorRole}
+            onChange={(e) => updateTraceFilter('creatorRole', e.target.value)}
+          >
+            <option value="all">All Creator Roles</option>
+            <option value="admin">Admin</option>
+            <option value="staff">Staff</option>
+            <option value="agent">Agent</option>
+            <option value="unknown">Unknown</option>
+          </select>
+
+          <select
+            aria-label="Filter by creator"
+            className="input"
+            value={traceFilters.creatorId}
+            onChange={(e) => updateTraceFilter('creatorId', e.target.value)}
+          >
+            <option value="all">All Creators</option>
+            {creatorOptions.map(([id, label]) => (
+              <option key={id} value={id}>{label}</option>
+            ))}
+          </select>
+
+          <select
+            aria-label="Filter by assigned staff"
+            className="input"
+            value={traceFilters.staffId}
+            onChange={(e) => updateTraceFilter('staffId', e.target.value)}
+          >
+            <option value="all">All Assigned Staff</option>
+            {staffOptions.map(([id, label]) => (
+              <option key={id} value={id}>{label}</option>
+            ))}
+          </select>
+
+          <select
+            aria-label="Filter by assigned agent"
+            className="input"
+            value={traceFilters.agentId}
+            onChange={(e) => updateTraceFilter('agentId', e.target.value)}
+          >
+            <option value="all">All Assigned Agents</option>
+            {agentOptions.map(([id, label]) => (
+              <option key={id} value={id}>{label}</option>
+            ))}
+          </select>
+
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: 500 }}>
+              Start Date
+            </span>
+            <input
+              aria-label="Filter by start date"
+              className="input"
+              type="date"
+              value={traceFilters.startDate}
+              onChange={(e) => updateTraceFilter('startDate', e.target.value)}
+            />
+          </label>
+
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: 500 }}>
+              End Date
+            </span>
+            <input
+              aria-label="Filter by end date"
+              className="input"
+              type="date"
+              value={traceFilters.endDate}
+              onChange={(e) => updateTraceFilter('endDate', e.target.value)}
+            />
+          </label>
+        </div>
+
+        <DataTable
+          columns={traceColumns}
+          data={filteredTraceability}
+          searchPlaceholder="Search customer, ID, creator, linked staff, or linked agent..."
+          emptyMessage={traceEmptyMessage}
+          perPage={8}
+        />
       </div>
     </div>
   );

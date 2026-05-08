@@ -1,15 +1,19 @@
 import { useState, useEffect } from 'react';
 import {
   Settings as SettingsIcon, User, Mail, Phone, MapPin, Save, CheckCircle,
-  Shield, DollarSign, Sliders, ToggleLeft, ToggleRight, AlertTriangle, Moon, Sun, Monitor
+  Shield, DollarSign, Sliders, ToggleLeft, ToggleRight, AlertTriangle, Moon, Sun, Monitor, History, Users, CheckSquare, ArrowLeftRight, CalendarClock
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { updateUser } from '../../services/userService';
 import { getSettings, saveSettings } from '../../services/settingsService';
+import { logActivity } from '../../services/activityLogService';
+import { getStaffHistoryBundle } from '../../services/staffHistoryService';
 import { useToast } from '../../contexts/ToastContext';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import { validators } from '../../utils/validation';
+import DataTable from '../shared/DataTable';
+import { formatDate, formatDateTime, timeAgo } from '../../utils/formatDate';
 
 export default function SettingsPage() {
   const { userProfile, currentUser, isAdmin } = useAuth();
@@ -39,6 +43,10 @@ export default function SettingsPage() {
   const [sysSettings, setSysSettings] = useState(null);
   const [sysLoading, setSysLoading] = useState(false);
   const [sysSaving, setSysSaving] = useState(false);
+  const [historyBundle, setHistoryBundle] = useState(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyFilters, setHistoryFilters] = useState({ startDate: '', endDate: '' });
+  const isStaff = userProfile?.role === 'staff';
 
   // Load system settings when admin switches to that tab
   useEffect(() => {
@@ -67,6 +75,23 @@ export default function SettingsPage() {
     });
     setErrors({});
   }, [currentUser?.displayName, currentUser?.email, currentUser?.uid, userProfile]);
+
+  useEffect(() => {
+    if (!isStaff || !userProfile?.uid) return;
+
+    async function loadHistory() {
+      setHistoryLoading(true);
+      try {
+        const bundle = await getStaffHistoryBundle(userProfile.uid);
+        setHistoryBundle(bundle);
+      } catch (err) {
+        console.error('Failed to load staff history:', err);
+      }
+      setHistoryLoading(false);
+    }
+
+    loadHistory();
+  }, [isStaff, userProfile?.uid]);
 
   function handleChange(e) {
     const { name, value } = e.target;
@@ -123,6 +148,13 @@ export default function SettingsPage() {
       };
 
       await updateUser(currentUser.uid, updateData);
+      await logActivity({
+        userId: currentUser.uid,
+        action: 'profile.update',
+        details: 'Updated personal profile details',
+        resourceType: 'user',
+        resourceId: currentUser.uid,
+      });
       setSaved(true);
       showToast('Profile updated successfully', 'success');
       setTimeout(() => setSaved(false), 3000);
@@ -160,6 +192,15 @@ export default function SettingsPage() {
     borderBottom: '1px solid var(--color-border)',
   };
 
+  const filteredTimeline = (historyBundle?.timeline || []).filter((item) => {
+    const timestamp = item.timestamp?.toDate ? item.timestamp.toDate() : new Date(item.timestamp || 0);
+    const startDate = historyFilters.startDate ? new Date(`${historyFilters.startDate}T00:00:00`) : null;
+    const endDate = historyFilters.endDate ? new Date(`${historyFilters.endDate}T23:59:59.999`) : null;
+    if (startDate && timestamp < startDate) return false;
+    if (endDate && timestamp > endDate) return false;
+    return true;
+  });
+
   return (
     <div className="animate-fade-in" style={{ maxWidth: 680 }}>
       <h1 style={{ fontSize: isMobile ? '1.25rem' : '1.5rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
@@ -177,6 +218,14 @@ export default function SettingsPage() {
         >
           <User size={14} /> Profile
         </button>
+        {isStaff && (
+          <button
+            className={`btn btn-sm ${activeTab === 'history' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setActiveTab('history')}
+          >
+            <History size={14} /> History
+          </button>
+        )}
         {isAdmin && (
           <button
             className={`btn btn-sm ${activeTab === 'system' ? 'btn-primary' : 'btn-ghost'}`}
@@ -276,6 +325,127 @@ export default function SettingsPage() {
       )}
 
       {/* ── TAB 2: System Settings (Admin Only) ── */}
+      {activeTab === 'history' && isStaff && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          {historyLoading ? (
+            <div className="glass-card" style={{ padding: '1.5rem' }}>
+              Loading staff history...
+            </div>
+          ) : (
+            <>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(4, 1fr)',
+                gap: '0.75rem',
+              }}>
+                {[
+                  { label: 'Managed Customers', value: historyBundle?.summary?.managedCustomers || 0, icon: Users },
+                  { label: 'Created Customers', value: historyBundle?.summary?.createdCustomers || 0, icon: Users },
+                  { label: 'Tasks Completed', value: historyBundle?.summary?.tasksCompleted || 0, icon: CheckSquare },
+                  { label: 'Transactions', value: historyBundle?.summary?.transactionsHandled || 0, icon: ArrowLeftRight },
+                ].map((item) => (
+                  <div key={item.label} className="glass-card" style={{ padding: '1rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                      <item.icon size={16} />
+                      <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>{item.label}</span>
+                    </div>
+                    <p style={{ fontSize: '1.25rem', fontWeight: 700 }}>{item.value}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="glass-card" style={{ padding: '1.5rem' }}>
+                <h3 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <CalendarClock size={18} /> Login and Activity Snapshot
+                </h3>
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '0.75rem' }}>
+                  <div>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>Profile Created</p>
+                    <p style={{ fontSize: '0.875rem', fontWeight: 600 }}>{formatDateTime(userProfile?.createdAt)}</p>
+                  </div>
+                  <div>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>Last Login</p>
+                    <p style={{ fontSize: '0.875rem', fontWeight: 600 }}>
+                      {currentUser?.metadata?.lastSignInTime
+                        ? new Date(currentUser.metadata.lastSignInTime).toLocaleString('en-IN')
+                        : 'Login history not available yet'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="glass-card" style={{ padding: '1rem' }}>
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr',
+                  gap: '0.75rem',
+                }}>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: 500 }}>Start Date</span>
+                    <input className="input" type="date" value={historyFilters.startDate} onChange={(e) => setHistoryFilters((prev) => ({ ...prev, startDate: e.target.value }))} />
+                  </label>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', fontWeight: 500 }}>End Date</span>
+                    <input className="input" type="date" value={historyFilters.endDate} onChange={(e) => setHistoryFilters((prev) => ({ ...prev, endDate: e.target.value }))} />
+                  </label>
+                </div>
+              </div>
+
+              <div className="glass-card" style={{ padding: '1.25rem' }}>
+                <h3 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '1rem' }}>Date-wise Activity Timeline</h3>
+                <DataTable
+                  columns={[
+                    { header: 'Activity', accessor: 'title' },
+                    { header: 'Details', accessor: 'description' },
+                    { header: 'Category', accessor: 'category' },
+                    {
+                      header: 'When',
+                      accessor: 'timestamp',
+                      exportValue: (row) => formatDateTime(row.timestamp),
+                      render: (row) => (
+                        <div>
+                          <p style={{ fontSize: '0.8125rem' }}>{formatDateTime(row.timestamp)}</p>
+                          <p style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>{timeAgo(row.timestamp)}</p>
+                        </div>
+                      ),
+                    },
+                  ]}
+                  data={filteredTimeline}
+                  searchPlaceholder="Search staff history..."
+                  emptyMessage="No historical activity found."
+                  exportable
+                  exportFormats={['csv', 'xlsx']}
+                  exportFilename="staff-activity-history"
+                />
+              </div>
+
+              <div className="glass-card" style={{ padding: '1.25rem' }}>
+                <h3 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '1rem' }}>Customer Creation History</h3>
+                <DataTable
+                  columns={[
+                    { header: 'Customer', accessor: 'displayName' },
+                    { header: 'Email', accessor: 'email' },
+                    { header: 'Ownership', accessor: 'managementScopeLabel' },
+                    {
+                      header: 'Created',
+                      accessor: 'createdAt',
+                      exportValue: (row) => formatDateTime(row.createdAt),
+                      render: (row) => <span style={{ fontSize: '0.8125rem' }}>{formatDate(row.createdAt)}</span>,
+                    },
+                  ]}
+                  data={historyBundle?.createdCustomers || []}
+                  searchPlaceholder="Search created customers..."
+                  emptyMessage="No created customers found."
+                  exportable
+                  exportFormats={['csv', 'xlsx']}
+                  exportFilename="staff-created-customers"
+                />
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {activeTab === 'system' && isAdmin && (
         <div className="glass-card" style={{ padding: '1.5rem' }}>
           {sysLoading ? (

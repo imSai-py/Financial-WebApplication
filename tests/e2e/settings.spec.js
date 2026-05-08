@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
+import { TEST_USERS } from '../support/localTestUsers.js';
 
-const STAFF_USER = { email: 'staff@financeflow.com', password: 'Staff@123' };
+const STAFF_USER = TEST_USERS.staff;
 
 async function loginAsStaff(page) {
   await page.goto('/login');

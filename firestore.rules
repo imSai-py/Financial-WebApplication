@@ -34,6 +34,14 @@ service cloud.firestore {
     function isAgent() { return getUserRole() == 'agent'; }
     function isCustomer() { return getUserRole() == 'customer'; }
     function isOwner(uid) { return request.auth.uid == uid; }
+    function isStaffManagedCustomer(data) {
+      return data.role == 'customer'
+        && (
+          data.assignedStaffId == request.auth.uid
+          || data.createdBy == request.auth.uid
+          || ('creator' in data && data.creator.id == request.auth.uid)
+        );
+    }
 
     // Suspended user gate — blocks ALL operations for suspended/deactivated users
     function isActiveUser() {
@@ -107,8 +115,7 @@ service cloud.firestore {
       // Customer: own profile only
       allow read: if isAuthenticated() && (
         isAdmin()
-        || (isStaff() && resource.data.role == 'customer'
-            && resource.data.assignedStaffId == request.auth.uid)
+        || (isStaff() && isStaffManagedCustomer(resource.data))
         || isOwner(userId)
         || (isAgent() && resource.data.role == 'customer'
             && resource.data.onboardedByAgent == request.auth.uid)
@@ -132,6 +139,20 @@ service cloud.firestore {
         (isAdmin()
           // Admin self-demotion protection: admin cannot change own role
           && (userId != request.auth.uid || fieldUnchanged('role'))
+        )
+        || (isStaff()
+          && isStaffManagedCustomer(resource.data)
+          && fieldUnchanged('role')
+          && fieldUnchanged('status')
+          && fieldUnchanged('email')
+          && fieldUnchanged('onboardedByAgent')
+          && fieldUnchanged('assignedStaffId')
+          && fieldUnchanged('createdBy')
+          && fieldUnchanged('creator')
+          && fieldUnchanged('uid')
+          && fieldUnchanged('hasAuthAccount')
+          && fieldUnchanged('promotedAt')
+          && fieldUnchanged('promotedBy')
         )
         || (isOwner(userId)
           && fieldUnchanged('role')
@@ -371,7 +392,10 @@ service cloud.firestore {
     // ═══════════════════════════════════════════════════════
     match /activityLogs/{logId} {
       // Read: Admin only
-      allow read: if isAuthorized() && isAdmin();
+      allow read: if isAuthorized() && (
+        isAdmin()
+        || resource.data.userId == request.auth.uid
+      );
 
       // Create: Any active authenticated user (auto-logged actions)
       allow create: if isAuthorized()

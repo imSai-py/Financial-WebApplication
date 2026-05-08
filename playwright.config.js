@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+import { DEFAULT_PLAYWRIGHT_BASE_URL } from './tests/support/localTestUsers.js';
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -7,7 +8,7 @@ export default defineConfig({
   workers: 1, // Sequential — Firebase Auth state can conflict in parallel
 
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: DEFAULT_PLAYWRIGHT_BASE_URL,
     headless: true,
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
@@ -23,7 +24,7 @@ export default defineConfig({
         viewport: { width: 375, height: 812 }, // iPhone X dimensions
         browserName: 'chromium',
       },
-      testMatch: /.*ui\.spec\.js/, // Run only UI tests on mobile for speed normally, but we'll configure explicitly
+      testMatch: /.*(ui|customer-activity)\.spec\.js/,
     },
     {
       name: 'Tablet-Chrome',
@@ -31,7 +32,7 @@ export default defineConfig({
         viewport: { width: 768, height: 1024 }, // iPad dimensions
         browserName: 'chromium',
       },
-      testMatch: /.*ui\.spec\.js/,
+      testMatch: /.*(ui|customer-activity)\.spec\.js/,
     },
     {
       name: 'Desktop-Chrome',

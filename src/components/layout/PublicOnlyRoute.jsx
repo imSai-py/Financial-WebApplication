@@ -12,10 +12,10 @@ import LoadingScreen from '../shared/LoadingScreen';
  *   - Avoids the back-button loop (dashboard → login → auto-redirect → dashboard)
  */
 export default function PublicOnlyRoute({ children }) {
-  const { currentUser, loading } = useAuth();
+  const { currentUser, authInitialized } = useAuth();
 
-  // Show branded loading screen while auth state resolves
-  if (loading) {
+  // Show branded loading screen only during the initial auth bootstrap.
+  if (!authInitialized) {
     return <LoadingScreen />;
   }
 

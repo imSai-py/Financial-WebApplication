@@ -91,6 +91,45 @@ export async function getTransactions(userProfile) {
   return [];
 }
 
+export async function getTransactionsForStaffHistory(staffId) {
+  const processedSnap = await getDocs(query(
+    col,
+    where('staffId', '==', staffId),
+    orderBy('createdAt', 'desc')
+  ));
+
+  const assignedSnap = await getDocs(query(
+    col,
+    where('assignedStaffId', '==', staffId),
+    orderBy('createdAt', 'desc')
+  ));
+
+  const seen = new Set();
+  const merged = [];
+
+  for (const d of processedSnap.docs) {
+    if (!seen.has(d.id)) {
+      seen.add(d.id);
+      merged.push({ id: d.id, ...d.data() });
+    }
+  }
+
+  for (const d of assignedSnap.docs) {
+    if (!seen.has(d.id)) {
+      seen.add(d.id);
+      merged.push({ id: d.id, ...d.data() });
+    }
+  }
+
+  merged.sort((a, b) => {
+    const aTime = a.createdAt?.toMillis?.() || 0;
+    const bTime = b.createdAt?.toMillis?.() || 0;
+    return bTime - aTime;
+  });
+
+  return merged;
+}
+
 export async function getTransactionById(id) {
   const snap = await getDoc(doc(db, COLLECTION, id));
   return snap.exists() ? { id: snap.id, ...snap.data() } : null;

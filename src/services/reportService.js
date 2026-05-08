@@ -1,5 +1,6 @@
 import { collection, getDocs, query, where, orderBy } from 'firebase/firestore';
 import { db } from '../config/firebase';
+import { getManagedCustomersByStaff } from './userService';
 
 /**
  * Report Service — Client-side aggregation for admin analytics.
@@ -164,18 +165,16 @@ export async function generateReport() {
  */
 export async function getStaffMetrics(staffId) {
   const txCol = collection(db, 'transactions');
-  const usersCol = collection(db, 'users');
   const tasksCol = collection(db, 'tasks');
 
   // Parallel scoped queries
-  const [customersSnap, txProcessedSnap, txAssignedSnap, tasksSnap] = await Promise.all([
-    getDocs(query(usersCol, where('role', '==', 'customer'), where('assignedStaffId', '==', staffId))),
+  const [customers, txProcessedSnap, txAssignedSnap, tasksSnap] = await Promise.all([
+    getManagedCustomersByStaff(staffId),
     getDocs(query(txCol, where('staffId', '==', staffId), orderBy('createdAt', 'desc'))),
     getDocs(query(txCol, where('assignedStaffId', '==', staffId), orderBy('createdAt', 'desc'))),
     getDocs(query(tasksCol, where('assignedTo', '==', staffId), orderBy('createdAt', 'desc'))),
   ]);
 
-  const customers = customersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
   const tasks = tasksSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
   // Merge & deduplicate transactions (same pattern as transactionService)

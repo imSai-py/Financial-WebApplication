@@ -9,7 +9,7 @@
  *   false       = no access
  *   'own'       = scoped to documents owned by the user
  *   'customer'  = can only create customer-role users
- *   'customers' = can only see customer-role users (staff)
+ *   'managed'   = can only see customer-role users they created or manage (staff)
  *   'onboarded' = can only see customers they onboarded (agent — Q4)
  *   'processed' = can only see records they processed (staff transactions)
  *   'assigned'  = can also see records for assigned customers (staff — Q2)
@@ -30,11 +30,11 @@ export const ROLE_PERMISSIONS = {
     settings:     { read: true, update: true },
   },
   staff: {
-    users:        { create: 'customer', read: 'customers', update: false, delete: false, changeRole: false },
+    users:        { create: 'customer', read: 'managed', update: 'managed', delete: false, changeRole: false },
     transactions: { create: true, read: 'assigned', update: true, delete: false },
     tasks:        { create: false, read: 'own', update: 'own', delete: false, reassign: false },
     commissions:  { create: false, read: false, update: false, delete: false },
-    activityLogs: { create: true, read: false, update: false, delete: false },
+    activityLogs: { create: true, read: 'own', update: false, delete: false },
     settings:     { read: true, update: true },
   },
   customer: {

@@ -24,6 +24,7 @@ const ADMIN_UID = 'admin-uid-001';
 const STAFF_UID = 'staff-uid-001';
 const CUSTOMER_UID = 'customer-uid-001';
 const CUSTOMER2_UID = 'customer-uid-002';
+const CUSTOMER3_UID = 'customer-uid-003';
 const AGENT_UID = 'agent-uid-001';
 
 // ── Auth contexts ──
@@ -80,6 +81,13 @@ beforeEach(async () => {
       assignedStaffId: 'other-staff',
       onboardedByAgent: 'other-agent',
     });
+    await setDoc(doc(db, 'users', CUSTOMER3_UID), {
+      displayName: 'Customer 3', email: 'customer3@test.com',
+      role: 'customer', status: 'active',
+      createdBy: STAFF_UID,
+      creator: { id: STAFF_UID, role: 'staff', name: 'Staff User' },
+      assignedStaffId: 'other-staff',
+    });
     await setDoc(doc(db, 'users', AGENT_UID), {
       displayName: 'Agent User', email: 'agent@test.com',
       role: 'agent', status: 'active',
@@ -125,6 +133,9 @@ beforeEach(async () => {
     await setDoc(doc(db, 'activityLogs', 'log-001'), {
       action: 'login', userId: ADMIN_UID, timestamp: Timestamp.now(),
     });
+    await setDoc(doc(db, 'activityLogs', 'log-002'), {
+      action: 'customer.update', userId: STAFF_UID, timestamp: Timestamp.now(),
+    });
 
     // App Settings
     await setDoc(doc(db, 'appSettings', 'global'), {
@@ -162,6 +173,11 @@ describe('Users Collection — Security Rules', () => {
   it('SEC-U05: Staff CANNOT read unassigned customer', async () => {
     const db = getDb(STAFF_UID, { role: 'staff' });
     await assertFails(getDoc(doc(db, 'users', CUSTOMER2_UID)));
+  });
+
+  it('SEC-U05B: Staff can read customer they created even if assigned elsewhere', async () => {
+    const db = getDb(STAFF_UID, { role: 'staff' });
+    await assertSucceeds(getDoc(doc(db, 'users', CUSTOMER3_UID)));
   });
 
   it('SEC-U06: Agent can read customer they onboarded', async () => {
@@ -506,6 +522,12 @@ describe('Activity Logs — Security Rules', () => {
 
   it('SEC-AL02: Customer CANNOT read activity logs', async () => {
     const db = getDb(CUSTOMER_UID, { role: 'customer' });
+    await assertFails(getDoc(doc(db, 'activityLogs', 'log-001')));
+  });
+
+  it('SEC-AL02B: Staff can read their own activity logs only', async () => {
+    const db = getDb(STAFF_UID, { role: 'staff' });
+    await assertSucceeds(getDoc(doc(db, 'activityLogs', 'log-002')));
     await assertFails(getDoc(doc(db, 'activityLogs', 'log-001')));
   });
 

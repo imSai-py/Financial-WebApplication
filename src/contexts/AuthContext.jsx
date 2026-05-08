@@ -30,6 +30,7 @@ export function AuthProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [authInitialized, setAuthInitialized] = useState(false);
   const [authError, setAuthError] = useState(null);
 
   /**
@@ -76,6 +77,7 @@ export function AuthProvider({ children }) {
 
     const timer = setTimeout(() => {
       setAuthError('timeout');
+      setAuthInitialized(true);
       setLoading(false);
     }, AUTH_TIMEOUT_MS);
 
@@ -191,6 +193,7 @@ export function AuthProvider({ children }) {
         if (cachedProfile?.uid === user.uid) {
           setUserProfile(cachedProfile);
           loginProfileRef.current = null;
+          setAuthInitialized(true);
           setLoading(false);
           setAuthError(null);
         }
@@ -235,6 +238,7 @@ export function AuthProvider({ children }) {
               setUserProfile(null);
             }
 
+            setAuthInitialized(true);
             setLoading(false);
             setAuthError(null);
           },
@@ -244,6 +248,7 @@ export function AuthProvider({ children }) {
             if (!cachedProfile) {
               setAuthError('network');
             }
+            setAuthInitialized(true);
             setLoading(false);
           }
         );
@@ -251,6 +256,7 @@ export function AuthProvider({ children }) {
         // User logged out
         activeUidRef.current = null;
         setUserProfile(null);
+        setAuthInitialized(true);
         setLoading(false);
         setAuthError(null);
       }
@@ -290,13 +296,18 @@ export function AuthProvider({ children }) {
       throw err;
     }
 
-    const cred = await signInWithEmailAndPassword(auth, normalizedEmail, password);
+    setLoading(true);
+    setAuthError(null);
+
+    try {
+      const cred = await signInWithEmailAndPassword(auth, normalizedEmail, password);
     
     // Force token refresh to pick up latest custom claims (e.g., after role change)
     await cred.user.getIdToken(true);
     
     const profileDoc = await getDoc(doc(db, 'users', cred.user.uid));
     if (!profileDoc.exists()) {
+      await signOut(auth);
       throw new Error('User profile not found. Contact an administrator.');
     }
 
@@ -317,13 +328,33 @@ export function AuthProvider({ children }) {
 
     const profile = buildUserProfile(cred.user, docData, resolvedRole);
 
+    // Prime auth state before route changes so protected routes do not
+    // briefly evaluate against stale signed-out context.
+    activeUidRef.current = cred.user.uid;
+    setCurrentUser(cred.user);
+    setUserProfile(profile);
+    setAuthInitialized(true);
+    setLoading(false);
+
     // ── Cache for onAuthStateChanged ──
     // Store the profile so the listener (which fires next) can skip
     // the redundant Firestore read. Saves 1 document read per login.
     loginProfileRef.current = profile;
 
-    setUserProfile(profile);
-    return profile;
+      return profile;
+    } catch (err) {
+      loginProfileRef.current = null;
+
+      if (!auth.currentUser) {
+        activeUidRef.current = null;
+        setCurrentUser(null);
+      }
+
+      setUserProfile(null);
+      setAuthInitialized(true);
+      setLoading(false);
+      throw err;
+    }
   }
 
   /**
@@ -352,6 +383,7 @@ export function AuthProvider({ children }) {
     currentUser,
     userProfile,
     loading,
+    authInitialized,
     authError,
     login,
     register,
