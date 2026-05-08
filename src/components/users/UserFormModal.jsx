@@ -6,7 +6,7 @@ import Modal from '../shared/Modal';
 import PasswordField from '../shared/PasswordField';
 import { useAuth } from '../../contexts/AuthContext';
 import { functions } from '../../config/firebase';
-import { updateUser } from '../../services/userService';
+import { getReferralEligibleUsers, updateUser } from '../../services/userService';
 import { logActivity } from '../../services/activityLogService';
 import { getCallableErrorMessage } from '../../utils/callableError';
 import { validators } from '../../utils/validation';
@@ -21,6 +21,7 @@ function buildInitialForm(defaultRole = 'customer') {
     email: '',
     phone: '',
     role: defaultRole,
+    directReferrerId: '',
     password: '',
     confirmPassword: '',
     panNumber: '',
@@ -37,12 +38,14 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
   const isEdit = !!user;
   const isLeadPromotion = !!leadSource && !isEdit;
   const canManageRoles = userProfile?.role === 'admin';
+  const canSelectReferrer = userProfile?.role === 'admin';
   const createRoleOptions = allowedRoles.length > 0 ? allowedRoles : ['customer'];
   const defaultCreateRole = createRoleOptions.includes('customer') ? 'customer' : createRoleOptions[0];
 
   const [form, setForm] = useState(() => buildInitialForm(defaultCreateRole));
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
+  const [referralOptions, setReferralOptions] = useState([]);
 
   useEffect(() => {
     if (user) {
@@ -51,6 +54,7 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
         email: user.email || '',
         phone: user.phone || '',
         role: user.role || 'customer',
+        directReferrerId: user.referrerId || '',
         password: '',
         confirmPassword: '',
         panNumber: user.panNumber || '',
@@ -70,6 +74,7 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
         email: leadSource.email || '',
         phone: leadSource.phone || '',
         role: 'customer',
+        directReferrerId: leadSource.referrerId || '',
         password: '',
         confirmPassword: '',
         panNumber: leadSource.panNumber || '',
@@ -88,6 +93,21 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
     }
     setErrors({});
   }, [user, leadSource, isOpen, defaultCreateRole]);
+
+  useEffect(() => {
+    if (!isOpen || isEdit || form.role !== 'customer' || !canSelectReferrer) return;
+
+    async function loadReferralOptions() {
+      try {
+        const options = await getReferralEligibleUsers();
+        setReferralOptions(options);
+      } catch (err) {
+        console.error('Failed to load referral options:', err);
+      }
+    }
+
+    loadReferralOptions();
+  }, [canSelectReferrer, form.role, isEdit, isOpen]);
 
   function handleChange(e) {
     const { name, value } = e.target;
@@ -194,6 +214,7 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
           role: form.role,
           existingDocId: leadSource?.id || undefined,
           password: form.role === 'customer' ? form.password : undefined,
+          directReferrerId: canSelectReferrer && form.role === 'customer' ? (form.directReferrerId || undefined) : undefined,
           phone: form.phone?.trim() || null,
           panNumber: form.panNumber?.trim().toUpperCase() || null,
           aadhaarLastFour: form.aadhaarLastFour?.trim() || null,
@@ -298,6 +319,20 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
               </p>
             )}
           </div>
+
+          {!isEdit && canSelectReferrer && form.role === 'customer' && (
+            <div style={inputStyle}>
+              <label style={labelStyle}><User size={14} /> Direct Referrer</label>
+              <select className="input" name="directReferrerId" value={form.directReferrerId} onChange={handleChange}>
+                <option value="">No referral</option>
+                {referralOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {(option.displayName || option.email || option.id)} ({option.role})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {!isEdit && form.role === 'customer' && (
             <>

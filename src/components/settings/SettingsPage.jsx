@@ -116,6 +116,21 @@ export default function SettingsPage() {
     setSysSettings(prev => ({ ...prev, [field]: !prev[field] }));
   }
 
+  function handleReferralLevelChange(index, value) {
+    const nextValue = Math.max(0, parseInt(value || 0, 10) || 0);
+    setSysSettings((prev) => {
+      const currentLevels = Array.isArray(prev.referralCommissionLevels)
+        ? prev.referralCommissionLevels
+        : [500, 250, 125, 75, 50];
+      const nextLevels = [...currentLevels];
+      nextLevels[index] = nextValue;
+      return {
+        ...prev,
+        referralCommissionLevels: nextLevels,
+      };
+    });
+  }
+
   function validateProfileForm() {
     const nextErrors = {};
     const nameErr = validators.required(form.displayName, 'Full name');
@@ -513,6 +528,51 @@ export default function SettingsPage() {
                     </p>
                   </div>
                 </div>
+              </div>
+
+              <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid var(--color-border)' }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '0.75rem',
+                  marginBottom: '0.75rem',
+                }}>
+                  <div>
+                    <p style={{ fontSize: '0.875rem', fontWeight: 600 }}>Referral Commission Levels</p>
+                    <p style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
+                      Fixed acquisition payouts for referral levels 1-5.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleSysToggle('referralCommissionEnabled')}
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                      color: sysSettings.referralCommissionEnabled ? '#10b981' : 'var(--color-text-muted)',
+                    }}
+                  >
+                    {sysSettings.referralCommissionEnabled ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
+                  </button>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(5, 1fr)', gap: '0.75rem' }}>
+                  {(sysSettings.referralCommissionLevels || [500, 250, 125, 75, 50]).slice(0, 5).map((amount, index) => (
+                    <div key={`ref-level-${index + 1}`}>
+                      <label style={labelStyle}>Level {index + 1}</label>
+                      <input
+                        className="input"
+                        type="number"
+                        min="0"
+                        value={amount}
+                        onChange={(e) => handleReferralLevelChange(index, e.target.value)}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <p style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)', marginTop: '0.5rem' }}>
+                  Maximum referral depth: {sysSettings.maxReferralCommissionDepth || 5} levels
+                </p>
               </div>
 
               {/* Operational Guardrails Section */}

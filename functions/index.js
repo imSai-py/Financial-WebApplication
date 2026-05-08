@@ -27,6 +27,9 @@ const db = getFirestore(app);
 // Valid roles enum — single source of truth
 // ═══════════════════════════════════════════════════════
 const VALID_ROLES = ["admin", "staff", "customer", "agent"];
+const REFERRAL_ELIGIBLE_ROLES = ["agent", "customer"];
+const DEFAULT_REFERRAL_LEVELS = [500, 250, 125, 75, 50];
+const MAX_REFERRAL_DEPTH = 5;
 
 function normalizeEmail(email) {
   return email.trim().toLowerCase();
@@ -52,6 +55,99 @@ function validatePassword(password) {
     return "Password must include at least one special character.";
   }
   return null;
+}
+
+function normalizeReferralPath(path = []) {
+  if (!Array.isArray(path)) return [];
+
+  const seen = new Set();
+  return path.reduce((entries, entry) => {
+    if (!entry?.id || seen.has(entry.id)) return entries;
+    seen.add(entry.id);
+    entries.push({
+      id: entry.id,
+      name: entry.name || "Unknown",
+      role: entry.role || "unknown",
+    });
+    return entries;
+  }, []);
+}
+
+function buildReferralEntry(snapshot) {
+  return {
+    id: snapshot.id,
+    name: snapshot.name || "Unknown",
+    role: snapshot.role || "unknown",
+  };
+}
+
+async function getReferralCommissionSettings() {
+  const settingsDoc = await db.collection("appSettings").doc("global").get();
+  const data = settingsDoc.exists ? settingsDoc.data() : {};
+  const configuredLevels = Array.isArray(data.referralCommissionLevels)
+    ? data.referralCommissionLevels.slice(0, MAX_REFERRAL_DEPTH)
+    : DEFAULT_REFERRAL_LEVELS;
+
+  return {
+    referralCommissionEnabled: data.referralCommissionEnabled !== false,
+    referralCommissionLevels: configuredLevels.map((value, index) => {
+      const numeric = Number(value);
+      const fallback = DEFAULT_REFERRAL_LEVELS[index] || 0;
+      return Number.isFinite(numeric) && numeric >= 0 ? Math.round(numeric) : fallback;
+    }),
+    maxReferralCommissionDepth: Math.min(
+      Number(data.maxReferralCommissionDepth) || MAX_REFERRAL_DEPTH,
+      MAX_REFERRAL_DEPTH
+    ),
+  };
+}
+
+function validateReferralPath(path = []) {
+  const ids = path.map((entry) => entry.id);
+  return new Set(ids).size === ids.length;
+}
+
+async function resolveReferralContext(referrerId, callerSnapshot) {
+  if (!referrerId) {
+    return {
+      directReferrer: null,
+      referralPath: [],
+      referralRootId: "",
+      referralDepth: 0,
+    };
+  }
+
+  const referrerSnapshot = await getUserProfileSnapshot(referrerId);
+  if (!referrerSnapshot || !REFERRAL_ELIGIBLE_ROLES.includes(referrerSnapshot.role)) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Direct referrer must be an active agent or customer."
+    );
+  }
+
+  const referrerDoc = await db.collection("users").doc(referrerId).get();
+  if (!referrerDoc.exists) {
+    throw new HttpsError("not-found", "Direct referrer not found.");
+  }
+
+  const referrerData = referrerDoc.data();
+  const inheritedPath = normalizeReferralPath(referrerData.referralPath || []);
+  const directReferrerEntry = buildReferralEntry(referrerSnapshot);
+  const referralPath = [directReferrerEntry, ...inheritedPath].slice(0, MAX_REFERRAL_DEPTH);
+
+  if (!validateReferralPath(referralPath)) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Circular referral chain detected for the selected referrer."
+    );
+  }
+
+  return {
+    directReferrer: directReferrerEntry,
+    referralPath,
+    referralRootId: referralPath[referralPath.length - 1]?.id || directReferrerEntry.id,
+    referralDepth: referralPath.length,
+  };
 }
 
 function mapCreateUserError(error) {
@@ -210,6 +306,86 @@ async function synthesizeLegacyCreator(existingData, callerSnapshot) {
   return buildCreatorSnapshot(callerSnapshot);
 }
 
+function buildReferralCommissionDocId({ sourceCustomerId, beneficiaryId, level }) {
+  return `referral-${sourceCustomerId}-${beneficiaryId}-L${level}`;
+}
+
+async function queueReferralCommissions({
+  transaction,
+  sourceCustomerId,
+  directReferrerId = "",
+  referralPath = [],
+  sourceCustomerName = "",
+  settings,
+}) {
+  const maxDepth = Math.min(
+    settings.maxReferralCommissionDepth || MAX_REFERRAL_DEPTH,
+    MAX_REFERRAL_DEPTH
+  );
+
+  const commissionEntries = [];
+
+  for (let index = 0; index < Math.min(referralPath.length, maxDepth); index += 1) {
+    const beneficiary = referralPath[index];
+    if (!beneficiary?.id || !REFERRAL_ELIGIBLE_ROLES.includes(beneficiary.role)) {
+      continue;
+    }
+
+    const level = index + 1;
+    const amount = settings.referralCommissionLevels[index] || 0;
+    if (amount <= 0) continue;
+
+    const commissionId = buildReferralCommissionDocId({
+      sourceCustomerId,
+      beneficiaryId: beneficiary.id,
+      level,
+    });
+    commissionEntries.push({
+      commissionId,
+      level,
+      beneficiary,
+      amount,
+      chainSnapshot: referralPath.slice(0, level).map((entry) => ({
+        id: entry.id,
+        name: entry.name || "Unknown",
+        role: entry.role || "unknown",
+      })),
+    });
+  }
+
+  const existingDocs = await Promise.all(
+    commissionEntries.map(({ commissionId }) =>
+      transaction.get(db.collection("commissions").doc(commissionId))
+    )
+  );
+
+  commissionEntries.forEach((entry, index) => {
+    if (existingDocs[index].exists) {
+      return;
+    }
+
+    const commissionRef = db.collection("commissions").doc(entry.commissionId);
+    transaction.set(commissionRef, {
+      beneficiaryId: entry.beneficiary.id,
+      beneficiaryRole: entry.beneficiary.role,
+      agentId: entry.beneficiary.role === "agent" ? entry.beneficiary.id : "",
+      sourceCustomerId,
+      customerId: sourceCustomerId,
+      directReferrerId: directReferrerId || "",
+      level: entry.level,
+      amount: entry.amount,
+      rate: 0,
+      status: "pending",
+      type: "customer_referral_commission",
+      description: `Referral commission for customer ${sourceCustomerName || sourceCustomerId} at level ${entry.level}`,
+      eventKey: entry.commissionId,
+      chainSnapshot: entry.chainSnapshot,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  });
+}
+
 // ═══════════════════════════════════════════════════════
 // 1. setUserRole — Admin-Only Callable Function
 // ═══════════════════════════════════════════════════════
@@ -286,6 +462,8 @@ exports.setUserRole = onCall(
     const previousRole = targetDoc.data().role;
 
     // ── Execute: Set custom claim + update Firestore doc ──
+    let createdAuthUserUid = null;
+
     try {
       // Set Firebase Auth custom claim
       await auth.setCustomUserClaims(targetUid, { role: newRole });
@@ -429,7 +607,8 @@ exports.createUserByAdmin = onCall(
 
     // ── Gate 3: Validate input ──
     const { email, displayName, role, phone, existingDocId,
-            panNumber, aadhaarLastFour, dateOfBirth, kycStatus, address, password } = request.data;
+            panNumber, aadhaarLastFour, dateOfBirth, kycStatus, address, password,
+            directReferrerId = "" } = request.data;
 
     if (!email || typeof email !== "string" || !email.includes("@")) {
       throw new HttpsError("invalid-argument", "Valid email is required.");
@@ -466,6 +645,7 @@ exports.createUserByAdmin = onCall(
       const normalizedEmail = normalizeEmail(email);
       let existingData = null;
       let preservedCreator = null;
+      const referralSettings = await getReferralCommissionSettings();
 
       if (existingDocId) {
         const existingDoc = await db.collection("users").doc(existingDocId).get();
@@ -498,6 +678,18 @@ exports.createUserByAdmin = onCall(
         }
       }
 
+      const requestedReferrerId = targetRole === "customer"
+        ? (directReferrerId || existingData?.referrerId || "")
+        : "";
+      const referralContext = targetRole === "customer"
+        ? await resolveReferralContext(requestedReferrerId, callerSnapshot)
+        : {
+            directReferrer: null,
+            referralPath: [],
+            referralRootId: "",
+            referralDepth: 0,
+          };
+
       const userRecord = await auth.createUser({
         email: normalizedEmail,
         displayName: displayName.trim(),
@@ -506,6 +698,7 @@ exports.createUserByAdmin = onCall(
       });
 
       const newUid = userRecord.uid;
+      createdAuthUserUid = newUid;
 
       // ── Set custom claim ──
       await auth.setCustomUserClaims(newUid, { role: targetRole });
@@ -532,6 +725,11 @@ exports.createUserByAdmin = onCall(
         assignedStaffId: callerRole === "staff" && targetRole === "customer" ? callerUid : null,
         address: address || { street: "", city: "", state: "", zip: "" },
         createdBy: callerUid,
+        referrerId: referralContext.directReferrer?.id || "",
+        referrerRole: referralContext.directReferrer?.role || "",
+        referralRootId: referralContext.referralRootId || "",
+        referralDepth: referralContext.referralDepth || 0,
+        referralPath: referralContext.referralPath || [],
         createdAt: FieldValue.serverTimestamp(),
         creator: buildCreatorSnapshot(callerSnapshot),
         updatedAt: FieldValue.serverTimestamp(),
@@ -548,12 +746,38 @@ exports.createUserByAdmin = onCall(
         userData.createdAt = existingData.createdAt || FieldValue.serverTimestamp();
         userData.createdBy = existingData.createdBy || callerUid;
         userData.creator = preservedCreator || userData.creator;
-
-        await db.collection("users").doc(existingDocId).delete();
+        userData.referrerId = userData.referrerId || existingData.referrerId || "";
+        userData.referrerRole = userData.referrerRole || existingData.referrerRole || "";
+        userData.referralRootId = userData.referralRootId || existingData.referralRootId || "";
+        userData.referralDepth = userData.referralDepth || existingData.referralDepth || 0;
+        userData.referralPath = (userData.referralPath && userData.referralPath.length > 0)
+          ? userData.referralPath
+          : normalizeReferralPath(existingData.referralPath || []);
       }
 
-      // Write the user doc keyed by Auth UID
-      await db.collection("users").doc(newUid).set(userData);
+      await db.runTransaction(async (transaction) => {
+        if (
+          targetRole === "customer"
+          && referralSettings.referralCommissionEnabled
+          && userData.referralPath.length > 0
+        ) {
+          await queueReferralCommissions({
+            transaction,
+            sourceCustomerId: newUid,
+            directReferrerId: userData.referrerId,
+            referralPath: userData.referralPath,
+            sourceCustomerName: displayName.trim(),
+            settings: referralSettings,
+          });
+        }
+
+        const userRef = db.collection("users").doc(newUid);
+        transaction.set(userRef, userData);
+
+        if (existingDocId && existingDocId !== newUid) {
+          transaction.delete(db.collection("users").doc(existingDocId));
+        }
+      });
 
       // ── Send password reset email ──
       // ── Log to activity logs ──
@@ -570,8 +794,26 @@ exports.createUserByAdmin = onCall(
             role: targetRole,
             type: existingDocId ? "lead_promotion" : "user_creation",
             createdByRole: callerRole,
+            directReferrerId: userData.referrerId || "",
+            referralDepth: userData.referralDepth || 0,
+            referralPath: userData.referralPath || [],
           },
         });
+
+        if (targetRole === "customer" && userData.referralPath.length > 0) {
+          await writeActivityLog({
+            userId: callerUid,
+            action: "referral_chain_attached",
+            details: `Attached referral chain to customer "${displayName}"`,
+            targetType: "user",
+            targetId: newUid,
+            metadata: {
+              directReferrerId: userData.referrerId || "",
+              referralDepth: userData.referralDepth || 0,
+              referralPath: userData.referralPath || [],
+            },
+          });
+        }
       } catch (logError) {
         console.error("createUserByAdmin activity log error:", logError);
       }
@@ -584,12 +826,16 @@ exports.createUserByAdmin = onCall(
           : `${targetRole} created successfully.`,
       };
     } catch (error) {
+      if (createdAuthUserUid) {
+        await auth.deleteUser(createdAuthUserUid).catch(() => {});
+      }
       console.error("createUserByAdmin error:", {
         callerUid,
         callerRole,
         targetRole,
         email,
         existingDocId: existingDocId || null,
+        directReferrerId: directReferrerId || null,
         code: error?.code || null,
         message: error?.message || String(error),
       });

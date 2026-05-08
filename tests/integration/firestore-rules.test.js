@@ -121,6 +121,18 @@ beforeEach(async () => {
       amount: 50000, rate: 5, status: 'pending',
       agentId: AGENT_UID,
     });
+    await setDoc(doc(db, 'commissions', 'comm-ref-001'), {
+      amount: 250, rate: 0, status: 'pending',
+      beneficiaryId: AGENT_UID,
+      beneficiaryRole: 'agent',
+      sourceCustomerId: CUSTOMER_UID,
+      directReferrerId: AGENT_UID,
+      level: 2,
+      type: 'customer_referral_commission',
+      eventKey: 'referral-customer-1-agent-1-L2',
+      chainSnapshot: [{ id: AGENT_UID, role: 'agent', name: 'Agent User' }],
+      agentId: '',
+    });
 
     // Loans
     await setDoc(doc(db, 'loans', 'loan-001'), {
@@ -461,6 +473,7 @@ describe('Commissions Collection — Security Rules', () => {
   it('SEC-CM02: Agent can read own commissions', async () => {
     const db = getDb(AGENT_UID, { role: 'agent' });
     await assertSucceeds(getDoc(doc(db, 'commissions', 'comm-001')));
+    await assertSucceeds(getDoc(doc(db, 'commissions', 'comm-ref-001')));
   });
 
   it('SEC-CM03: Customer CANNOT read commissions', async () => {

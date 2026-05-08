@@ -26,6 +26,22 @@ function createUnknownSnapshot(id, role = 'unknown') {
   return { id, name: 'Unknown', role };
 }
 
+function normalizeReferralPath(path = []) {
+  if (!Array.isArray(path)) return [];
+
+  const seen = new Set();
+  return path.reduce((entries, entry) => {
+    if (!entry?.id || seen.has(entry.id)) return entries;
+    seen.add(entry.id);
+    entries.push({
+      id: entry.id,
+      name: entry.name || 'Unknown',
+      role: entry.role || 'unknown',
+    });
+    return entries;
+  }, []);
+}
+
 function dedupeById(records = []) {
   const merged = new Map();
   records.forEach((record) => {
@@ -150,6 +166,11 @@ export function selectAdminCustomerTraceability(users = []) {
         linkedAgentDisplay: customer.onboardedByAgent
           ? `${getUserLabel(agentUser)} (${customer.onboardedByAgent})`
           : '—',
+        referrerId: customer.referrerId || '',
+        referrerRole: customer.referrerRole || '',
+        referralRootId: customer.referralRootId || '',
+        referralDepth: customer.referralDepth || 0,
+        referralPath: normalizeReferralPath(customer.referralPath),
       };
     })
     .sort((a, b) => b.createdAtMs - a.createdAtMs);
@@ -195,6 +216,39 @@ export async function getUsersByRole(role) {
 export async function getUserById(id) {
   const snap = await getDoc(doc(db, COLLECTION, id));
   return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+}
+
+export async function getReferralEligibleUsers() {
+  const [agents, customers] = await Promise.all([
+    getUsersByRole('agent'),
+    getUsersByRole('customer'),
+  ]);
+
+  return [...agents, ...customers]
+    .filter((user) => user.status === 'active' && user.customerStatus !== 'lead')
+    .sort((a, b) => getUserLabel(a).localeCompare(getUserLabel(b)));
+}
+
+export async function getCustomerReferralChain(customerId) {
+  const customer = await getUserById(customerId);
+  if (!customer || customer.role !== 'customer') return null;
+
+  const referralPath = normalizeReferralPath(customer.referralPath);
+  const referrer = customer.referrerId
+    ? referralPath.find((entry) => entry.id === customer.referrerId)
+      || createUnknownSnapshot(customer.referrerId, customer.referrerRole || 'unknown')
+    : null;
+
+  return {
+    customerId: customer.id || customer.uid,
+    customerName: customer.displayName || customer.email || 'Unknown Customer',
+    referrerId: customer.referrerId || '',
+    referrerRole: customer.referrerRole || '',
+    referralRootId: customer.referralRootId || '',
+    referralDepth: customer.referralDepth || 0,
+    referrer,
+    referralPath,
+  };
 }
 
 /**

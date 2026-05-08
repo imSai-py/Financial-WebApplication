@@ -101,7 +101,7 @@ service cloud.firestore {
 
     // Field immutability checker
     function fieldUnchanged(field) {
-      return request.resource.data[field] == resource.data[field];
+      return !(field in request.resource.data) || request.resource.data[field] == resource.data[field];
     }
 
     // ═══════════════════════════════════════════════════════
@@ -153,12 +153,22 @@ service cloud.firestore {
           && fieldUnchanged('hasAuthAccount')
           && fieldUnchanged('promotedAt')
           && fieldUnchanged('promotedBy')
+          && fieldUnchanged('referrerId')
+          && fieldUnchanged('referrerRole')
+          && fieldUnchanged('referralRootId')
+          && fieldUnchanged('referralDepth')
+          && fieldUnchanged('referralPath')
         )
         || (isOwner(userId)
           && fieldUnchanged('role')
           && fieldUnchanged('status')
           && fieldUnchanged('email')
           && fieldUnchanged('onboardedByAgent')
+          && fieldUnchanged('referrerId')
+          && fieldUnchanged('referrerRole')
+          && fieldUnchanged('referralRootId')
+          && fieldUnchanged('referralDepth')
+          && fieldUnchanged('referralPath')
         )
         // Agent can update customers they onboarded (e.g., set uid after creation)
         || (isAgent()
@@ -167,6 +177,11 @@ service cloud.firestore {
           && fieldUnchanged('role')
           && fieldUnchanged('status')
           && fieldUnchanged('onboardedByAgent')
+          && fieldUnchanged('referrerId')
+          && fieldUnchanged('referrerRole')
+          && fieldUnchanged('referralRootId')
+          && fieldUnchanged('referralDepth')
+          && fieldUnchanged('referralPath')
         )
       );
 
@@ -297,7 +312,10 @@ service cloud.firestore {
       // Agent: only own commissions
       allow read: if isAuthorized() && (
         isAdmin()
-        || (isAgent() && resource.data.agentId == request.auth.uid)
+        || (isAgent() && (
+          resource.data.agentId == request.auth.uid
+          || resource.data.beneficiaryId == request.auth.uid
+        ))
       );
 
       // --- CREATE ---
@@ -318,7 +336,15 @@ service cloud.firestore {
         && isValidCommissionStatus(request.resource.data.status)
         && fieldUnchanged('amount')
         && fieldUnchanged('rate')
-        && fieldUnchanged('agentId');
+        && fieldUnchanged('agentId')
+        && fieldUnchanged('beneficiaryId')
+        && fieldUnchanged('beneficiaryRole')
+        && fieldUnchanged('sourceCustomerId')
+        && fieldUnchanged('directReferrerId')
+        && fieldUnchanged('level')
+        && fieldUnchanged('type')
+        && fieldUnchanged('eventKey')
+        && fieldUnchanged('chainSnapshot');
 
       // --- DELETE ---
       // NEVER — financial records are immutable

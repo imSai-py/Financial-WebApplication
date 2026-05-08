@@ -14,6 +14,7 @@ import DataTable from '../shared/DataTable';
 import { getUsersByRole } from '../../services/userService';
 import { getStaffHistoryBundle } from '../../services/staffHistoryService';
 import { formatDateTime } from '../../utils/formatDate';
+import { getReferralCommissions } from '../../services/commissionService';
 
 function formatCurrency(amount) {
   if (amount >= 10000000) return `₹${(amount / 10000000).toFixed(2)} Cr`;
@@ -253,6 +254,7 @@ function AdminReportsView({ isMobile }) {
   const [staffUsers, setStaffUsers] = useState([]);
   const [selectedStaffId, setSelectedStaffId] = useState('');
   const [selectedStaffHistory, setSelectedStaffHistory] = useState(null);
+  const [referralCommissions, setReferralCommissions] = useState([]);
 
   useEffect(() => {
     async function load() {
@@ -263,6 +265,7 @@ function AdminReportsView({ isMobile }) {
         ]);
         setReport(data);
         setStaffUsers(staff);
+        setReferralCommissions(await getReferralCommissions());
         if (staff[0]?.id) {
           setSelectedStaffId(staff[0].id);
         }
@@ -452,6 +455,61 @@ function AdminReportsView({ isMobile }) {
         <ReportStatCard icon={Users} label="Customers" value={totals.customers} color="#10b981" />
         <ReportStatCard icon={UserPlus} label="Active Leads" value={totals.leads} color="#f59e0b" />
         <ReportStatCard icon={Users} label="Agents" value={totals.agents} color="#a78bfa" />
+      </div>
+
+      <div className="glass-card" style={{ padding: '1.25rem', marginTop: '1.5rem' }}>
+        <div style={{ marginBottom: '1rem' }}>
+          <h3 style={{ fontSize: '0.9375rem', fontWeight: 700 }}>Referral Commission Audit</h3>
+          <p style={{ color: 'var(--color-text-muted)', fontSize: '0.8125rem' }}>
+            Track customer-acquisition commissions by referral level and beneficiary.
+          </p>
+        </div>
+
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(4, 1fr)',
+          gap: '0.75rem',
+          marginBottom: '1rem',
+        }}>
+          {[1, 2, 3, 4, 5].map((level) => {
+            const levelTotal = referralCommissions
+              .filter((commission) => commission.level === level)
+              .reduce((sum, commission) => sum + (commission.amount || 0), 0);
+
+            return (
+              <div key={`referral-level-card-${level}`} style={{ padding: '0.875rem', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-secondary)' }}>
+                <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>Level {level}</p>
+                <p style={{ fontSize: '1rem', fontWeight: 700, marginTop: '0.25rem' }}>{formatCurrency(levelTotal)}</p>
+              </div>
+            );
+          })}
+        </div>
+
+        <DataTable
+          columns={[
+            { header: 'Level', accessor: 'level' },
+            { header: 'Beneficiary', accessor: 'beneficiaryId' },
+            { header: 'Role', accessor: 'beneficiaryRole' },
+            { header: 'Source Customer', accessor: 'sourceCustomerId' },
+            {
+              header: 'Amount',
+              accessor: 'amount',
+              render: (row) => <span style={{ fontWeight: 600, color: '#10b981' }}>{formatAmount(row.amount || 0)}</span>,
+            },
+            {
+              header: 'Created',
+              accessor: 'createdAt',
+              exportValue: (row) => formatDateTime(row.createdAt),
+              render: (row) => <span style={{ fontSize: '0.8125rem' }}>{formatDateTime(row.createdAt)}</span>,
+            },
+          ]}
+          data={referralCommissions}
+          searchPlaceholder="Search referral commissions..."
+          emptyMessage="No referral commissions recorded yet."
+          exportable
+          exportFormats={['csv', 'xlsx']}
+          exportFilename="admin-referral-commissions"
+        />
       </div>
 
       <div className="glass-card" style={{ padding: '1.25rem', marginTop: '1.5rem' }}>

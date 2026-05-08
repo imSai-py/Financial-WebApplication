@@ -17,6 +17,9 @@ const DEFAULT_SETTINGS = {
   // Financial Defaults
   defaultCommissionRate: 5,
   maxCommissionRate: 15,
+  referralCommissionEnabled: true,
+  referralCommissionLevels: [500, 250, 125, 75, 50],
+  maxReferralCommissionDepth: 5,
   minTransactionAmount: 100,
   maxTransactionAmount: 10000000,
   autoApprovalThreshold: 50000,

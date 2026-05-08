@@ -7,6 +7,19 @@ import { db } from '../config/firebase';
 const COLLECTION = 'commissions';
 const col = collection(db, COLLECTION);
 
+function dedupeCommissions(records = []) {
+  const merged = new Map();
+  records.forEach((record) => {
+    if (!record?.id) return;
+    merged.set(record.id, record);
+  });
+  return Array.from(merged.values()).sort((a, b) => {
+    const left = typeof a.createdAt?.toMillis === 'function' ? a.createdAt.toMillis() : 0;
+    const right = typeof b.createdAt?.toMillis === 'function' ? b.createdAt.toMillis() : 0;
+    return right - left;
+  });
+}
+
 /**
  * Get commissions scoped by role.
  * - Admin: all commissions
@@ -23,12 +36,7 @@ export async function getCommissions(userProfile) {
   }
 
   if (role === 'agent') {
-    const snap = await getDocs(query(
-      col,
-      where('agentId', '==', uid),
-      orderBy('createdAt', 'desc')
-    ));
-    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    return getCommissionsByAgent(uid);
   }
 
   // Staff and Customer have no commission access
@@ -36,12 +44,41 @@ export async function getCommissions(userProfile) {
 }
 
 export async function getCommissionsByAgent(agentId) {
+  const [directSnap, beneficiarySnap] = await Promise.all([
+    getDocs(query(
+      col,
+      where('agentId', '==', agentId),
+      orderBy('createdAt', 'desc')
+    )),
+    getDocs(query(
+      col,
+      where('beneficiaryId', '==', agentId),
+      orderBy('createdAt', 'desc')
+    )),
+  ]);
+
+  return dedupeCommissions([
+    ...directSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+    ...beneficiarySnap.docs.map(d => ({ id: d.id, ...d.data() })),
+  ]);
+}
+
+export async function getReferralCommissions() {
+  const snap = await getDocs(query(col, orderBy('createdAt', 'desc')));
+  return snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .filter((record) => record.type === 'customer_referral_commission');
+}
+
+export async function getReferralCommissionsByBeneficiary(beneficiaryId) {
   const snap = await getDocs(query(
     col,
-    where('agentId', '==', agentId),
+    where('beneficiaryId', '==', beneficiaryId),
     orderBy('createdAt', 'desc')
   ));
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  return snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .filter((record) => record.type === 'customer_referral_commission');
 }
 
 export async function getCommissionById(id) {
@@ -84,11 +121,39 @@ export async function updateCommission(id, data) {
  * @returns {Array} Matching commissions sorted by creation date (newest first)
  */
 export async function getCommissionsByStatus(agentId, status) {
-  const snap = await getDocs(query(
-    col,
-    where('agentId', '==', agentId),
-    where('status', '==', status),
-    orderBy('createdAt', 'desc')
-  ));
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  const [directSnap, beneficiarySnap] = await Promise.all([
+    getDocs(query(
+      col,
+      where('agentId', '==', agentId),
+      where('status', '==', status),
+      orderBy('createdAt', 'desc')
+    )),
+    getDocs(query(
+      col,
+      where('beneficiaryId', '==', agentId),
+      where('status', '==', status),
+      orderBy('createdAt', 'desc')
+    )),
+  ]);
+
+  return dedupeCommissions([
+    ...directSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+    ...beneficiarySnap.docs.map(d => ({ id: d.id, ...d.data() })),
+  ]);
+}
+
+export function summarizeReferralEarnings(commissions = []) {
+  return commissions.reduce((summary, commission) => {
+    const level = commission.level || 0;
+    const amount = commission.amount || 0;
+    const key = `level${level}`;
+    summary.total += amount;
+    summary.count += 1;
+    summary.byLevel[key] = (summary.byLevel[key] || 0) + amount;
+    return summary;
+  }, {
+    total: 0,
+    count: 0,
+    byLevel: {},
+  });
 }

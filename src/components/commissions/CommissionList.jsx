@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { IndianRupee } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { getCommissions, getCommissionsByAgent } from '../../services/commissionService';
+import { getCommissions, getCommissionsByAgent, summarizeReferralEarnings } from '../../services/commissionService';
 import DataTable from '../shared/DataTable';
 import StatusBadge from '../shared/StatusBadge';
 import LoadingSpinner from '../shared/LoadingSpinner';
@@ -17,7 +17,7 @@ export default function CommissionList() {
   useEffect(() => {
     async function load() {
       try {
-        const data = isAdmin ? await getCommissions() : await getCommissionsByAgent(userProfile.uid);
+        const data = isAdmin ? await getCommissions(userProfile) : await getCommissionsByAgent(userProfile.uid);
         setCommissions(data);
       } catch (err) { console.error(err); }
       setLoading(false);
@@ -29,8 +29,20 @@ export default function CommissionList() {
 
   const totalPaid = commissions.filter(c => c.status === 'paid').reduce((s, c) => s + (c.amount || 0), 0);
   const totalPending = commissions.filter(c => c.status === 'pending').reduce((s, c) => s + (c.amount || 0), 0);
+  const referralSummary = summarizeReferralEarnings(
+    commissions.filter((commission) => commission.type === 'customer_referral_commission')
+  );
 
   const columns = [
+    {
+      header: 'Type',
+      accessor: 'type',
+      render: (row) => (
+        <span style={{ fontSize: '0.75rem', textTransform: 'capitalize' }}>
+          {(row.type || 'manual').replace(/_/g, ' ')}
+        </span>
+      ),
+    },
     {
       header: 'Rate',
       accessor: 'rate',
@@ -47,16 +59,38 @@ export default function CommissionList() {
       render: (row) => <StatusBadge status={row.status} />,
     },
     {
-      header: 'Transaction ID',
+      header: 'Source',
       accessor: 'transactionId',
-      render: (row) => <span style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: 'var(--color-text-muted)' }}>{row.transactionId?.slice(0, 12)}...</span>,
+      render: (row) => (
+        <span style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: 'var(--color-text-muted)' }}>
+          {row.transactionId
+            ? row.transactionId.slice(0, 12)
+            : row.sourceCustomerId
+              ? row.sourceCustomerId.slice(0, 12)
+              : 'â€”'}
+        </span>
+      ),
     },
+    isAdmin ? {
+      header: 'Level',
+      accessor: 'level',
+      render: (row) => <span style={{ fontSize: '0.8125rem' }}>{row.level || 'â€”'}</span>,
+    } : null,
+    isAdmin ? {
+      header: 'Beneficiary',
+      accessor: 'beneficiaryId',
+      render: (row) => (
+        <span style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: 'var(--color-text-muted)' }}>
+          {row.beneficiaryId || row.agentId || 'â€”'}
+        </span>
+      ),
+    } : null,
     {
       header: 'Date',
       accessor: 'createdAt',
       render: (row) => <span style={{ fontSize: '0.8125rem' }}>{formatDate(row.createdAt)}</span>,
     },
-  ];
+  ].filter(Boolean);
 
   return (
     <div className="animate-fade-in">
@@ -70,6 +104,7 @@ export default function CommissionList() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
         <StatCard title="Total Paid" value={formatAmount(totalPaid)} icon={IndianRupee} color="success" />
         <StatCard title="Pending Payout" value={formatAmount(totalPending)} icon={IndianRupee} color="warning" />
+        {isAdmin && <StatCard title="Referral Earnings" value={formatAmount(referralSummary.total)} icon={IndianRupee} color="info" />}
         <StatCard title="Total Records" value={commissions.length} icon={IndianRupee} color="primary" />
       </div>
 

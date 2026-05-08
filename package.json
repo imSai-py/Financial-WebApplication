@@ -15,6 +15,7 @@
     "test:auth": "npx playwright test tests/e2e/auth.spec.js",
     "test:ui": "npx playwright test tests/e2e/ui.spec.js",
     "test:rules": "npx vitest run tests/integration/firestore-rules.test.js",
+    "test:referral:integration": "npx vitest run tests/integration/referral-commission.test.js",
     "test:staff:integration": "npx vitest run tests/integration/staff-history.test.js",
     "test:tracking:integration": "npx vitest run tests/integration/customer-traceability.test.js tests/integration/customer-activity-validation.test.js",
     "test:tracking": "npm run test:tracking:integration && npm run test:tracking:e2e",
