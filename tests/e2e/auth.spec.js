@@ -187,6 +187,9 @@ test.describe('Criterion 1: Auth & Routing', () => {
     await expect(signOutBtn).toBeVisible({ timeout: 5000 });
     await signOutBtn.click();
 
+    await expect(page.getByText(/are you sure you want to sign out/i)).toBeVisible();
+    await page.locator('.btn-danger', { hasText: /^sign out$/i }).click();
+
     // Should redirect to login
     await page.waitForURL('**/login', { timeout: 15000 });
     await expect(page).toHaveURL(/.*\/login/);
@@ -195,6 +198,22 @@ test.describe('Criterion 1: Auth & Routing', () => {
     await page.goto('/dashboard');
     await page.waitForURL('**/login', { timeout: 20000 });
     await expect(page).toHaveURL(/.*\/login/);
+  });
+
+  test('AUTH-09A: Canceling sign out keeps the user logged in', async ({ page }) => {
+    await loginAndWait(page, USERS.admin.email, USERS.admin.password);
+    await page.goto('/users');
+    await expect(page).toHaveURL(/.*\/users/);
+
+    const signOutBtn = page.locator('button', { hasText: /sign out/i });
+    await expect(signOutBtn).toBeVisible({ timeout: 5000 });
+    await signOutBtn.click();
+
+    await expect(page.getByText(/are you sure you want to sign out/i)).toBeVisible();
+    await page.getByRole('button', { name: /^cancel$/i }).click();
+
+    await expect(page).toHaveURL(/.*\/users/);
+    await expect(page.getByText(/are you sure you want to sign out/i)).not.toBeVisible();
   });
 
   // ─── AUTH-10: Catch-all route redirects ───

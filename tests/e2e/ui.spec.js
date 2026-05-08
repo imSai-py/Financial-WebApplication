@@ -156,4 +156,15 @@ test.describe('Criterion 4: Responsiveness', () => {
     await page.locator('button[aria-label="Show password"]').click();
     await expect(confirmPasswordInput).toHaveAttribute('type', 'text');
   });
+
+  test('UI-05: Back navigation appears on subpages and returns to dashboard fallback', async ({ page }) => {
+    await page.goto('/users');
+
+    const backButton = page.locator('#header-back-button');
+    await expect(backButton).toBeVisible();
+    await backButton.click();
+
+    await page.waitForURL('**/dashboard', { timeout: 15000 });
+    await expect(page.locator('#header-back-button')).toHaveCount(0);
+  });
 });

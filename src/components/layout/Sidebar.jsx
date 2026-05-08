@@ -1,4 +1,4 @@
-import { NavLink, useNavigate } from 'react-router-dom';
+import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSettings } from '../../contexts/SettingsContext';
 import { getNavItems } from '../../utils/rolePermissions';
@@ -14,17 +14,11 @@ const iconMap = {
   IndianRupee, ScrollText, Settings, UserCog, BarChart3, Landmark, Briefcase,
 };
 
-export default function Sidebar({ isOpen, onClose, collapsed, onCollapse }) {
-  const { userProfile, logout } = useAuth();
+export default function Sidebar({ isOpen, onClose, collapsed, onCollapse, onSignOut }) {
+  const { userProfile } = useAuth();
   const { settings } = useSettings();
-  const navigate = useNavigate();
   const isMobile = useIsMobile();
   const navItems = getNavItems(userProfile?.role);
-
-  async function handleLogout() {
-    await logout();
-    navigate('/login');
-  }
 
   // On mobile, sidebar is never "collapsed" — it's the full off-canvas drawer
   const isCollapsed = !isMobile && collapsed;
@@ -273,7 +267,7 @@ export default function Sidebar({ isOpen, onClose, collapsed, onCollapse }) {
           )}
 
           <button
-            onClick={handleLogout}
+            onClick={onSignOut}
             className="btn btn-ghost"
             title={isCollapsed ? 'Sign Out' : undefined}
             style={{

@@ -1,11 +1,11 @@
-import { Menu, Bell, Search, X } from 'lucide-react';
+import { ArrowLeft, Bell, Menu, Search, X } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useIsMobile, useIsSmallMobile } from '../../hooks/useMediaQuery';
 import { subscribeToNotifications, markAsRead, markAllAsRead } from '../../services/notificationService';
 import SearchOverlay from './SearchOverlay';
 
-export default function Header({ onMenuToggle }) {
+export default function Header({ onMenuToggle, showBackButton = false, onBack = () => {} }) {
   const { userProfile } = useAuth();
   const isMobile = useIsMobile();
   const isSmallMobile = useIsSmallMobile();
@@ -64,6 +64,18 @@ export default function Header({ onMenuToggle }) {
             id="header-menu-toggle"
           >
             <Menu size={22} />
+          </button>
+        )}
+
+        {showBackButton && (
+          <button
+            onClick={onBack}
+            className="btn btn-ghost btn-sm"
+            style={{ padding: '0.5rem', flexShrink: 0 }}
+            aria-label="Go back"
+            id="header-back-button"
+          >
+            <ArrowLeft size={isMobile ? 22 : 18} />
           </button>
         )}
 

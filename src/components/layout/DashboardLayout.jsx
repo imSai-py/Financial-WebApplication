@@ -1,15 +1,22 @@
 import { useState, useEffect } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Header from './Header';
 import NetworkGuard from '../shared/NetworkGuard';
 import { useIsMobile } from '../../hooks/useMediaQuery';
+import { useAuth } from '../../contexts/AuthContext';
+import SignOutConfirmDialog from './SignOutConfirmDialog';
 
 const COLLAPSE_KEY = 'ff_sidebar_collapsed';
 
 export default function DashboardLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const isMobile = useIsMobile();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { logout } = useAuth();
 
   // Persist collapsed state in localStorage
   const [collapsed, setCollapsed] = useState(() => {
@@ -41,6 +48,32 @@ export default function DashboardLayout() {
       ? 'var(--sidebar-collapsed-width)'
       : 'var(--sidebar-width)';
 
+  const showBackButton = location.pathname !== '/dashboard';
+
+  function handleBack() {
+    const historyIndex = typeof window !== 'undefined' ? window.history.state?.idx ?? 0 : 0;
+    if (historyIndex > 0) {
+      navigate(-1);
+      return;
+    }
+
+    navigate('/dashboard', { replace: true });
+  }
+
+  async function handleConfirmSignOut() {
+    if (signingOut) return;
+
+    setSigningOut(true);
+    try {
+      await logout();
+      navigate('/login', { replace: true });
+    } finally {
+      setSigningOut(false);
+      setShowSignOutConfirm(false);
+      setSidebarOpen(false);
+    }
+  }
+
   return (
     <NetworkGuard>
       <div style={{ display: 'flex', minHeight: '100vh' }}>
@@ -49,6 +82,7 @@ export default function DashboardLayout() {
           onClose={() => setSidebarOpen(false)}
           collapsed={collapsed}
           onCollapse={toggleCollapse}
+          onSignOut={() => setShowSignOutConfirm(true)}
         />
 
         <div style={{
@@ -60,7 +94,11 @@ export default function DashboardLayout() {
           transition: 'margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
           width: isMobile ? '100%' : undefined,
         }}>
-          <Header onMenuToggle={() => setSidebarOpen(prev => !prev)} />
+          <Header
+            onMenuToggle={() => setSidebarOpen(prev => !prev)}
+            showBackButton={showBackButton}
+            onBack={handleBack}
+          />
 
           <main style={{
             flex: 1,
@@ -72,6 +110,16 @@ export default function DashboardLayout() {
           </main>
         </div>
       </div>
+      <SignOutConfirmDialog
+        isOpen={showSignOutConfirm}
+        onClose={() => {
+          if (!signingOut) {
+            setShowSignOutConfirm(false);
+          }
+        }}
+        onConfirm={handleConfirmSignOut}
+        loading={signingOut}
+      />
     </NetworkGuard>
   );
 }
