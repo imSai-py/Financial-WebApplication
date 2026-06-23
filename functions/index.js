@@ -12,12 +12,13 @@
  *   - Only these functions can modify custom claims (admin SDK privilege)
  */
 
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/firestore");
 const { beforeUserCreated } = require("firebase-functions/v2/identity");
 const { initializeApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const crypto = require("crypto");
 
 const app = initializeApp();
 const auth = getAuth(app);
@@ -33,6 +34,12 @@ const MAX_REFERRAL_DEPTH = 5;
 const AUTH_IDENTIFIER_COLLECTION = "authIdentifiers";
 const SYNTHETIC_EMAIL_DOMAIN = "customers.financeflow.local";
 const ALLOWED_KYC_STATUSES = ["not_submitted", "pending", "verified", "rejected"];
+const SUPPORTED_PAYMENT_METHODS = ["UPI", "Bank Transfer", "Cash", "Office Collection"];
+const OVERPAYMENT_MODES = {
+  REJECT: "reject_entire_request",
+  PARTIAL: "accept_only_remaining_amount",
+  CREDIT: "accept_full_amount_store_credit",
+};
 
 function normalizeEmail(email) {
   return email.trim().toLowerCase();
@@ -109,7 +116,8 @@ function buildAuthIdentifierDoc(kind, normalizedValue, { userId, authEmail, role
 }
 
 function getCustomerIdentifierEntries(data = {}, userId) {
-  if (data.role !== "customer" || data.hasAuthAccount !== true) {
+  const hasAuth = data.hasAuthAccount === true || data.role !== "customer";
+  if (!hasAuth) {
     return [];
   }
 
@@ -193,10 +201,77 @@ function validatePassword(password) {
   if (!/[0-9]/.test(password)) {
     return "Password must include at least one number.";
   }
-  if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>/?]/.test(password)) {
+  if (!/[^\w\s]/.test(password)) {
     return "Password must include at least one special character.";
   }
   return null;
+}
+
+function parseCurrencyAmount(value, fieldName = "Amount") {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    throw new HttpsError("invalid-argument", `${fieldName} must be greater than zero.`);
+  }
+
+  return Math.round(numeric);
+}
+
+function sanitizeText(value, maxLength = 200) {
+  if (!value || typeof value !== "string") return "";
+  return value.trim().slice(0, maxLength);
+}
+
+function normalizePaymentMethod(value) {
+  const method = sanitizeText(value, 40);
+  const exact = SUPPORTED_PAYMENT_METHODS.find((item) => item.toLowerCase() === method.toLowerCase());
+  if (!exact) {
+    throw new HttpsError(
+      "invalid-argument",
+      `Payment method must be one of: ${SUPPORTED_PAYMENT_METHODS.join(", ")}.`
+    );
+  }
+
+  return exact;
+}
+
+function generateTemporaryPassword(length = 14) {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*";
+  let password = "";
+  const randomBytes = crypto.randomBytes(length * 2);
+
+  for (let index = 0; password.length < length && index < randomBytes.length; index += 1) {
+    password += alphabet[randomBytes[index] % alphabet.length];
+  }
+
+  const fallback = `${password}Aa1!`;
+  return fallback.slice(0, Math.max(length, 12));
+}
+
+async function allocateCustomerId(transaction) {
+  const counterRef = db.collection("appSettings").doc("sequences");
+  const counterSnap = await transaction.get(counterRef);
+  const currentValue = counterSnap.exists ? Number(counterSnap.data().customerSequence || 0) : 0;
+  const nextValue = currentValue + 1;
+
+  return {
+    counterRef,
+    nextValue,
+    customerId: `INV${String(nextValue).padStart(6, "0")}`,
+  };
+}
+
+async function createUserNotification(userId, payload = {}) {
+  if (!userId) return;
+
+  await db.collection("users").doc(userId).collection("notifications").add({
+    title: payload.title || "Update",
+    message: payload.message || "",
+    type: payload.type || "info",
+    link: payload.link || "",
+    isRead: false,
+    metadata: payload.metadata || {},
+    createdAt: FieldValue.serverTimestamp(),
+  });
 }
 
 function normalizeReferralPath(path = []) {
@@ -249,7 +324,7 @@ function validateReferralPath(path = []) {
   return new Set(ids).size === ids.length;
 }
 
-async function resolveReferralContext(referrerId, callerSnapshot) {
+async function resolveReferralContext(referrerId) {
   if (!referrerId) {
     return {
       directReferrer: null,
@@ -314,6 +389,56 @@ function mapCreateUserError(error) {
     default:
       return new HttpsError("internal", error?.message || "Failed to create user.");
   }
+}
+
+function httpStatusForHttpsErrorCode(code = "internal") {
+  switch (code) {
+    case "invalid-argument":
+      return 400;
+    case "unauthenticated":
+      return 401;
+    case "permission-denied":
+      return 403;
+    case "not-found":
+      return 404;
+    case "already-exists":
+      return 409;
+    case "failed-precondition":
+      return 412;
+    default:
+      return 500;
+  }
+}
+
+function toCallableErrorBody(error) {
+  const normalized = error instanceof HttpsError
+    ? error
+    : mapCreateUserError(error);
+
+  return {
+    error: {
+      status: normalized.code.toUpperCase().replace(/-/g, "_"),
+      message: normalized.message || "Internal error.",
+      details: normalized.details || null,
+    },
+  };
+}
+
+async function requireAdminCaller(request) {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+
+  const callerRole = await resolveCallerRole(request);
+  if (callerRole !== "admin") {
+    throw new HttpsError("permission-denied", "Only admins can manage passwords.");
+  }
+
+  return {
+    callerUid: request.auth.uid,
+    callerRole,
+    callerSnapshot: await resolveCallerIdentity(request),
+  };
 }
 
 async function resolveCallerRole(request) {
@@ -452,6 +577,8 @@ function buildReferralCommissionDocId({ sourceCustomerId, beneficiaryId, level }
   return `referral-${sourceCustomerId}-${beneficiaryId}-L${level}`;
 }
 
+// Kept for legacy commission backfills; activation-time investment commissions use a newer path.
+// eslint-disable-next-line no-unused-vars
 async function queueReferralCommissions({
   transaction,
   sourceCustomerId,
@@ -526,6 +653,257 @@ async function queueReferralCommissions({
       updatedAt: FieldValue.serverTimestamp(),
     });
   });
+}
+
+async function getGlobalAppSettings() {
+  const settingsDoc = await db.collection("appSettings").doc("global").get();
+  return settingsDoc.exists ? settingsDoc.data() : {};
+}
+
+function getOverpaymentMode(settings = {}) {
+  const configuredMode = sanitizeText(settings.overpaymentMode, 64);
+  return Object.values(OVERPAYMENT_MODES).includes(configuredMode)
+    ? configuredMode
+    : OVERPAYMENT_MODES.REJECT;
+}
+
+function normalizeReceiptMetadata(receipt = {}) {
+  if (!receipt || typeof receipt !== "object") return null;
+  const path = sanitizeText(receipt.path || "", 500);
+  if (!path) return null;
+
+  return {
+    path,
+    url: sanitizeText(receipt.url || "", 1000),
+    contentType: sanitizeText(receipt.contentType || "", 100),
+    size: Number(receipt.size || 0) || 0,
+    name: sanitizeText(receipt.name || "", 200),
+    uploadedAt: FieldValue.serverTimestamp(),
+  };
+}
+
+async function assertManagedCustomerScope(customerId, callerUid, callerRole) {
+  const customerRef = db.collection("users").doc(customerId);
+  const customerSnap = await customerRef.get();
+  if (!customerSnap.exists) {
+    throw new HttpsError("not-found", "Customer record not found.");
+  }
+
+  const customerData = customerSnap.data();
+  if (customerData.role !== "customer") {
+    throw new HttpsError("failed-precondition", "Target user must be a customer.");
+  }
+
+  if (callerRole === "admin") {
+    return { customerRef, customerData };
+  }
+
+  const isManagedByStaff = callerRole === "staff" && (
+    customerData.assignedStaffId === callerUid
+    || customerData.createdBy === callerUid
+    || customerData.createdById === callerUid
+  );
+
+  const isManagedByAgent = callerRole === "agent" && (
+    customerData.onboardedByAgent === callerUid
+    || customerData.assignedAgentId === callerUid
+    || customerData.createdBy === callerUid
+    || customerData.createdById === callerUid
+  );
+
+  if (!isManagedByStaff && !isManagedByAgent) {
+    throw new HttpsError(
+      "permission-denied",
+      callerRole === "staff"
+        ? "You can only manage customers assigned to you."
+        : "You can only manage customers in your portfolio."
+    );
+  }
+
+  return { customerRef, customerData };
+}
+
+function buildInvestmentPlanSnapshot(planData = {}, planId = "") {
+  return {
+    planId,
+    planName: sanitizeText(planData.planName || "Investment Plan", 120),
+    requiredAmount: Number(planData.requiredAmount || 0) || 0,
+    durationMonths: Number(planData.durationMonths || 0) || 0,
+    monthlyReturn: Number(planData.monthlyReturn || 0) || 0,
+    totalExpectedReturn: Number(planData.totalExpectedReturn || 0) || 0,
+    maturityAmount: Number(planData.maturityAmount || 0) || 0,
+    payoutFrequency: sanitizeText(planData.payoutFrequency || "monthly", 30) || "monthly",
+    activationRule: sanitizeText(planData.activationRule || "full_funding_required", 60) || "full_funding_required",
+  };
+}
+
+function addMonths(baseDate, monthsToAdd) {
+  const date = new Date(baseDate);
+  const originalDate = date.getDate();
+  date.setMonth(date.getMonth() + monthsToAdd);
+  if (date.getDate() !== originalDate) {
+    date.setDate(0);
+  }
+  return date;
+}
+
+function generatePayoutSchedule({ investmentId, customerId, approvedAt, planSnapshot, creatorSnapshot }) {
+  const startDate = approvedAt instanceof Date ? approvedAt : new Date(approvedAt);
+  const durationMonths = Number(planSnapshot.durationMonths || 0);
+  const payoutAmount = Number(planSnapshot.monthlyReturn || 0);
+  const payouts = [];
+
+  for (let index = 0; index < durationMonths; index += 1) {
+    const monthNumber = index + 1;
+    const expectedDate = addMonths(startDate, monthNumber);
+    payouts.push({
+      ref: db.collection("investmentPayouts").doc(),
+      data: {
+        investmentId,
+        customerId,
+        monthNumber,
+        amount: payoutAmount,
+        expectedDate,
+        actualPaidDate: null,
+        status: "scheduled",
+        transactionReference: "",
+        approvedById: "",
+        approvedByName: "",
+        createdById: creatorSnapshot?.id || "",
+        createdByName: creatorSnapshot?.name || "",
+        createdByRole: creatorSnapshot?.role || "",
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+    });
+  }
+
+  return payouts;
+}
+
+function resolveFundingStatus({ fundedAmount, requiredAmount }) {
+  if (fundedAmount >= requiredAmount) return "fully_funded";
+  if (fundedAmount > 0) return "partially_funded";
+  return "pending";
+}
+
+async function recordReferralCommissionActivation({
+  transaction,
+  investmentId,
+  sourceCustomerId,
+  sourceCustomerName,
+  directReferrerId,
+  referralPath,
+  settings,
+}) {
+  const maxDepth = Math.min(
+    settings.maxReferralCommissionDepth || MAX_REFERRAL_DEPTH,
+    MAX_REFERRAL_DEPTH
+  );
+
+  for (let index = 0; index < Math.min(referralPath.length, maxDepth); index += 1) {
+    const beneficiary = referralPath[index];
+    if (!beneficiary?.id || !REFERRAL_ELIGIBLE_ROLES.includes(beneficiary.role)) {
+      continue;
+    }
+
+    const level = index + 1;
+    const commissionAmount = Number(settings.referralCommissionLevels[index] || 0) || 0;
+    if (commissionAmount <= 0) continue;
+
+    const commissionId = buildReferralCommissionDocId({
+      sourceCustomerId: `${sourceCustomerId}-${investmentId}`,
+      beneficiaryId: beneficiary.id,
+      level,
+    });
+    const commissionDoc = {
+      id: commissionId,
+      customerId: beneficiary.id,
+      referrerId: beneficiary.id,
+      referredCustomerId: sourceCustomerId,
+      beneficiaryId: beneficiary.id,
+      beneficiaryRole: beneficiary.role,
+      sourceCustomerId,
+      directReferrerId: directReferrerId || "",
+      linkedInvestmentId: investmentId,
+      commissionAmount,
+      commissionType: "investment_activation_referral",
+      amount: commissionAmount,
+      status: "pending",
+      level,
+      type: "customer_referral_commission",
+      generatedAt: FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      description: `Referral commission for activated investment of ${sourceCustomerName || sourceCustomerId}`,
+      chainSnapshot: referralPath.slice(0, level),
+    };
+
+    const legacyRef = db.collection("commissions").doc(commissionId);
+    const normalizedRef = db.collection("referralCommissions").doc(commissionId);
+    transaction.set(legacyRef, commissionDoc);
+    transaction.set(normalizedRef, commissionDoc);
+  }
+}
+
+async function applyInvestmentActivationIfEligible({
+  transaction,
+  investmentRef,
+  investmentData,
+  approverSnapshot,
+  finalFundingApprovedAt,
+}) {
+  const requiredAmount = Number(investmentData.planSnapshot?.requiredAmount || investmentData.requiredAmount || 0) || 0;
+  const fundedAmount = Number(investmentData.fundedAmount || 0) || 0;
+
+  if (requiredAmount <= 0 || fundedAmount < requiredAmount || investmentData.lifecycleStatus === "active") {
+    return false;
+  }
+
+  const approvalDate = finalFundingApprovedAt instanceof Date
+    ? finalFundingApprovedAt
+    : new Date(finalFundingApprovedAt || Date.now());
+  const planSnapshot = buildInvestmentPlanSnapshot(
+    investmentData.planSnapshot || investmentData,
+    investmentData.planSnapshot?.planId || investmentData.planId || ""
+  );
+
+  const payouts = generatePayoutSchedule({
+    investmentId: investmentRef.id,
+    customerId: investmentData.customerId,
+    approvedAt: approvalDate,
+    planSnapshot,
+    creatorSnapshot: approverSnapshot,
+  });
+
+  payouts.forEach(({ ref, data }) => transaction.set(ref, data));
+
+  transaction.update(investmentRef, {
+    lifecycleStatus: "active",
+    fundingStatus: "fully_funded",
+    startDate: approvalDate,
+    activatedAt: approvalDate,
+    activationApprovedById: approverSnapshot?.id || "",
+    activationApprovedByName: approverSnapshot?.name || "",
+    activationApprovedByRole: approverSnapshot?.role || "",
+    payoutScheduleGenerated: true,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  const settings = await getReferralCommissionSettings();
+  if (settings.referralCommissionEnabled && Array.isArray(investmentData.referralPath) && investmentData.referralPath.length > 0) {
+    await recordReferralCommissionActivation({
+      transaction,
+      investmentId: investmentRef.id,
+      sourceCustomerId: investmentData.customerId,
+      sourceCustomerName: investmentData.customerName || "",
+      directReferrerId: investmentData.referrerId || "",
+      referralPath: investmentData.referralPath,
+      settings,
+    });
+  }
+
+  return true;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -648,7 +1026,7 @@ exports.setUserRole = onCall(
 //
 exports.onUserCreate = beforeUserCreated(
   { region: "us-central1" },
-  async (event) => {
+  async (_event) => {
     // Set custom claim for the new user to 'customer'
     // The beforeUserCreated blocking function can set custom claims
     // via the response object
@@ -831,6 +1209,43 @@ exports.updateUserProfile = onCall(
       updatedAt: FieldValue.serverTimestamp(),
     };
 
+    if (Object.prototype.hasOwnProperty.call(rawUpdates, "email")) {
+      const emailValue = typeof rawUpdates.email === "string" ? rawUpdates.email.trim() : "";
+      if (emailValue) {
+        if (!looksLikeEmail(emailValue)) {
+          throw new HttpsError("invalid-argument", "Valid email format is required.");
+        }
+        const normalized = normalizeOptionalEmail(emailValue);
+        updatePayload.email = normalized;
+        updatePayload.authEmail = normalized;
+        nextData.email = normalized;
+        nextData.authEmail = normalized;
+      } else {
+        if (
+          beforeData.role === "customer"
+          && (!beforeData.username || !beforeData.phone)
+        ) {
+          throw new HttpsError(
+            "invalid-argument",
+            "Username and phone number are required to remove email address."
+          );
+        }
+        updatePayload.email = null;
+        updatePayload.authEmail = buildSyntheticAuthEmail(targetUid);
+        nextData.email = null;
+        nextData.authEmail = updatePayload.authEmail;
+      }
+
+      try {
+        await auth.updateUser(targetUid, {
+          email: nextData.authEmail,
+        });
+      } catch (authError) {
+        console.error("Auth email update failed in functions:", authError);
+        throw new HttpsError("invalid-argument", "Failed to update authentication email: " + authError.message);
+      }
+    }
+
     if (Object.prototype.hasOwnProperty.call(rawUpdates, "displayName")) {
       if (typeof rawUpdates.displayName !== "string" || !rawUpdates.displayName.trim()) {
         throw new HttpsError("invalid-argument", "Display name is required.");
@@ -950,6 +1365,79 @@ exports.updateUserProfile = onCall(
   }
 );
 
+exports.setManagedUserPassword = onCall(
+  {
+    region: "us-central1",
+    enforceAppCheck: false,
+  },
+  async (request) => {
+    const { callerUid, callerSnapshot } = await requireAdminCaller(request);
+    const targetUid = request.data?.targetUid;
+    const newPassword = request.data?.newPassword;
+
+    if (!targetUid || typeof targetUid !== "string") {
+      throw new HttpsError("invalid-argument", "Target user id is required.");
+    }
+
+    const passwordError = validatePassword(newPassword);
+    if (passwordError) {
+      throw new HttpsError("invalid-argument", passwordError);
+    }
+
+    const targetRef = db.collection("users").doc(targetUid);
+    const targetSnap = await targetRef.get();
+    if (!targetSnap.exists) {
+      throw new HttpsError("not-found", "Target user not found.");
+    }
+
+    const targetData = targetSnap.data();
+    if (!["staff", "agent"].includes(targetData.role)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Passwords can only be managed for staff and agent accounts."
+      );
+    }
+
+    try {
+      await auth.updateUser(targetUid, {
+        password: newPassword,
+      });
+
+      await targetRef.update({
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      await writeActivityLog({
+        userId: callerUid,
+        action: "password_reset",
+        details: `Set a new password for ${targetData.role} "${targetData.displayName || targetUid}"`,
+        targetType: "user",
+        targetId: targetUid,
+        metadata: {
+          type: "password_reset",
+          targetRole: targetData.role,
+          targetDisplayName: targetData.displayName || "",
+          actorRole: callerSnapshot.role,
+        },
+      });
+
+      return {
+        success: true,
+        message: `Password updated for ${targetData.role}.`,
+      };
+    } catch (error) {
+      console.error("setManagedUserPassword error:", {
+        callerUid,
+        targetUid,
+        targetRole: targetData.role,
+        code: error?.code || null,
+        message: error?.message || String(error),
+      });
+      throw mapCreateUserError(error);
+    }
+  }
+);
+
 // ═══════════════════════════════════════════════════════
 // 4. createUserByAdmin — Admin-Only User/Lead Creation
 // ═══════════════════════════════════════════════════════
@@ -963,18 +1451,13 @@ exports.updateUserProfile = onCall(
 // Input: { email, displayName, role, password?, phone?, existingDocId? }
 // Output: { success: true, uid: string, message: string }
 //
-exports.createUserByAdmin = onCall(
-  {
-    region: "us-central1",
-    enforceAppCheck: false, // TODO: enable in Phase 2 security hardening
-  },
-  async (request) => {
+async function createUserByAdminInternal(request) {
     // ── Gate 1: Must be authenticated ──
     if (!request.auth) {
       throw new HttpsError("unauthenticated", "Authentication required.");
     }
 
-    // ── Gate 2: Must be admin ──
+    // ── Gate 2: Must be admin, staff or agent ──
     const callerUid = request.auth.uid;
     const callerRole = await resolveCallerRole(request);
     const callerSnapshot = await resolveCallerIdentity(request);
@@ -1024,26 +1507,27 @@ exports.createUserByAdmin = onCall(
     }
 
     if (targetRole === "customer") {
+      if (password) {
+        const passwordError = validatePassword(password);
+        if (passwordError) {
+          throw new HttpsError("invalid-argument", passwordError);
+        }
+      }
+    } else {
+      if (!normalizedEmail) {
+        throw new HttpsError("invalid-argument", "Email is required for non-customer accounts.");
+      }
       const passwordError = validatePassword(password);
       if (passwordError) {
         throw new HttpsError("invalid-argument", passwordError);
       }
-      if (trimmedUsername) {
-        const usernameError = validateUsername(trimmedUsername);
-        if (usernameError) {
-          throw new HttpsError("invalid-argument", usernameError);
-        }
+    }
+
+    if (trimmedUsername) {
+      const usernameError = validateUsername(trimmedUsername);
+      if (usernameError) {
+        throw new HttpsError("invalid-argument", usernameError);
       }
-      if (!normalizedEmail) {
-        if (!trimmedUsername) {
-          throw new HttpsError("invalid-argument", "Username is required when email is not provided.");
-        }
-        if (!normalizedPhone) {
-          throw new HttpsError("invalid-argument", "Phone number is required when email is not provided.");
-        }
-      }
-    } else if (!normalizedEmail) {
-      throw new HttpsError("invalid-argument", "Valid email is required.");
     }
 
     let createdAuthUserUid = null;
@@ -1052,7 +1536,6 @@ exports.createUserByAdmin = onCall(
       // ── Create Firebase Auth account ──
       let existingData = null;
       let preservedCreator = null;
-      const referralSettings = await getReferralCommissionSettings();
 
       if (existingDocId) {
         const existingDoc = await db.collection("users").doc(existingDocId).get();
@@ -1098,13 +1581,17 @@ exports.createUserByAdmin = onCall(
           };
 
       const newUid = db.collection("users").doc().id;
+      const generatedCustomerId = targetRole === "customer" ? `INV-PENDING-${newUid.slice(0, 6).toUpperCase()}` : "";
+      const generatedTemporaryPassword = targetRole === "customer"
+        ? (password || generateTemporaryPassword(14))
+        : password;
       const authEmail = normalizedEmail || buildSyntheticAuthEmail(newUid);
       const userRecord = await auth.createUser({
         uid: newUid,
         email: authEmail,
         displayName: displayName.trim(),
         disabled: false,
-        ...(targetRole === "customer" ? { password } : {}),
+        ...(generatedTemporaryPassword ? { password: generatedTemporaryPassword } : {}),
       });
 
       const createdUid = userRecord.uid;
@@ -1130,23 +1617,50 @@ exports.createUserByAdmin = onCall(
         kycStatus: kycStatus || "not_submitted",
         kycVerifiedAt: null,
         kycVerifiedBy: null,
-        customerStatus: "active",
-        hasAuthAccount: true,
-        promotedAt: FieldValue.serverTimestamp(),
-        promotedBy: callerUid,
-        onboardedByAgent: callerRole === "agent" && targetRole === "customer" ? callerUid : null,
-        assignedStaffId: callerRole === "staff" && targetRole === "customer" ? callerUid : null,
         address: address || { street: "", city: "", state: "", zip: "" },
         createdBy: callerUid,
-        referrerId: referralContext.directReferrer?.id || "",
-        referrerRole: referralContext.directReferrer?.role || "",
-        referralRootId: referralContext.referralRootId || "",
-        referralDepth: referralContext.referralDepth || 0,
-        referralPath: referralContext.referralPath || [],
+        createdById: callerUid,
+        createdByName: callerSnapshot?.name || "",
+        createdByRole: callerRole,
+        assignedAgentId: callerRole === "agent" ? callerUid : null,
+        assignedAgentName: callerRole === "agent" ? callerSnapshot?.name || "" : "",
+        assignedStaffId: callerRole === "staff" ? callerUid : null,
+        assignedStaffName: callerRole === "staff" ? callerSnapshot?.name || "" : "",
         createdAt: FieldValue.serverTimestamp(),
         creator: buildCreatorSnapshot(callerSnapshot),
         updatedAt: FieldValue.serverTimestamp(),
       };
+
+      if (targetRole === "customer") {
+        userData.customerStatus = "active";
+        userData.hasAuthAccount = true;
+        userData.promotedAt = FieldValue.serverTimestamp();
+        userData.promotedBy = callerUid;
+        userData.onboardedByAgent = callerRole === "agent" ? callerUid : null;
+        userData.assignedStaffId = callerRole === "staff" ? callerUid : null;
+        userData.assignedStaffName = callerRole === "staff" ? callerSnapshot?.name || "" : "";
+        userData.referrerId = referralContext.directReferrer?.id || "";
+        userData.referrerRole = referralContext.directReferrer?.role || "";
+        userData.referralRootId = referralContext.referralRootId || "";
+        userData.referralDepth = referralContext.referralDepth || 0;
+        userData.referralPath = referralContext.referralPath || [];
+        userData.referrerCustomerId = referralContext.directReferrer?.id || "";
+        userData.referredByName = referralContext.directReferrer?.name || "";
+        userData.referralLevel = referralContext.referralDepth || 0;
+        userData.directReferralCount = existingData?.directReferralCount || 0;
+        userData.totalReferralCount = existingData?.totalReferralCount || 0;
+        userData.referralEarnings = existingData?.referralEarnings || 0;
+        userData.customerId = generatedCustomerId;
+        userData.username = generatedCustomerId;
+        userData.normalizedUsername = normalizeUsername(generatedCustomerId);
+        userData.mustChangePassword = true;
+        userData.temporaryPasswordIssuedAt = FieldValue.serverTimestamp();
+        userData.loginActivity = {
+          lastLoginAt: null,
+          lastPasswordResetAt: null,
+          failedAttempts: 0,
+        };
+      }
 
       if (existingDocId && existingDocId !== createdUid && existingData) {
         userData.panNumber = userData.panNumber || existingData.panNumber || null;
@@ -1158,6 +1672,9 @@ exports.createUserByAdmin = onCall(
         userData.address = existingData.address || userData.address;
         userData.createdAt = existingData.createdAt || FieldValue.serverTimestamp();
         userData.createdBy = existingData.createdBy || callerUid;
+        userData.createdById = existingData.createdById || existingData.createdBy || callerUid;
+        userData.createdByName = existingData.createdByName || callerSnapshot?.name || "";
+        userData.createdByRole = existingData.createdByRole || callerRole;
         userData.creator = preservedCreator || userData.creator;
         userData.username = userData.username || existingData.username || null;
         userData.normalizedUsername = userData.normalizedUsername || existingData.normalizedUsername || normalizeUsername(existingData.username || "");
@@ -1171,28 +1688,26 @@ exports.createUserByAdmin = onCall(
         userData.referralPath = (userData.referralPath && userData.referralPath.length > 0)
           ? userData.referralPath
           : normalizeReferralPath(existingData.referralPath || []);
+        userData.referrerCustomerId = userData.referrerCustomerId || existingData.referrerCustomerId || "";
+        userData.referredByName = userData.referredByName || existingData.referredByName || "";
+        userData.customerId = existingData.customerId || userData.customerId;
+        userData.username = existingData.customerId || userData.username || existingData.username || null;
+        userData.normalizedUsername = normalizeUsername(userData.username || existingData.username || "");
+        userData.mustChangePassword = true;
       }
 
-      const customerIdentifierEntries = targetRole === "customer"
-        ? getCustomerIdentifierEntries(userData, createdUid)
-        : [];
-
       await db.runTransaction(async (transaction) => {
-        if (
-          targetRole === "customer"
-          && referralSettings.referralCommissionEnabled
-          && userData.referralPath.length > 0
-        ) {
-          await queueReferralCommissions({
-            transaction,
-            sourceCustomerId: createdUid,
-            directReferrerId: userData.referrerId,
-            referralPath: userData.referralPath,
-            sourceCustomerName: displayName.trim(),
-            settings: referralSettings,
-          });
+        let customerSequenceAllocation = null;
+        const needsCustomerId = targetRole === "customer"
+          && (!userData.customerId || String(userData.customerId).startsWith("INV-PENDING-"));
+        if (needsCustomerId) {
+          customerSequenceAllocation = await allocateCustomerId(transaction);
+          userData.customerId = customerSequenceAllocation.customerId;
+          userData.username = customerSequenceAllocation.customerId;
+          userData.normalizedUsername = normalizeUsername(customerSequenceAllocation.customerId);
         }
 
+        const customerIdentifierEntries = getCustomerIdentifierEntries(userData, createdUid);
         for (const entry of customerIdentifierEntries) {
           const identifierRef = db.collection(AUTH_IDENTIFIER_COLLECTION).doc(entry.docId);
           const identifierSnap = await transaction.get(identifierRef);
@@ -1211,6 +1726,13 @@ exports.createUserByAdmin = onCall(
         }
 
         const userRef = db.collection("users").doc(createdUid);
+        if (customerSequenceAllocation) {
+          transaction.set(customerSequenceAllocation.counterRef, {
+            customerSequence: customerSequenceAllocation.nextValue,
+            updatedAt: FieldValue.serverTimestamp(),
+          }, { merge: true });
+        }
+
         transaction.set(userRef, userData);
         for (const entry of customerIdentifierEntries) {
           transaction.set(
@@ -1267,6 +1789,8 @@ exports.createUserByAdmin = onCall(
       return {
         success: true,
         uid: newUid,
+        customerId: userData.customerId || "",
+        temporaryPassword: targetRole === "customer" ? generatedTemporaryPassword : undefined,
         message: existingDocId
           ? `Lead promoted to ${targetRole}.`
           : `${targetRole} created successfully.`,
@@ -1286,6 +1810,81 @@ exports.createUserByAdmin = onCall(
         message: error?.message || String(error),
       });
       throw mapCreateUserError(error);
+    }
+}
+
+exports.createUserByAdmin = onCall(
+  {
+    region: "us-central1",
+    enforceAppCheck: false, // TODO: enable in Phase 2 security hardening
+  },
+  async (request) => createUserByAdminInternal(request)
+);
+
+exports.createUserByAdminHttp = onRequest(
+  {
+    region: "us-central1",
+    cors: true,
+  },
+  async (req, res) => {
+    if (req.method === "OPTIONS") {
+      res.status(204).send("");
+      return;
+    }
+
+    if (req.method !== "POST") {
+      res.status(405).json({
+        error: {
+          status: "METHOD_NOT_ALLOWED",
+          message: "Only POST requests are supported.",
+        },
+      });
+      return;
+    }
+
+    try {
+      let authUser = null;
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        const idToken = authHeader.substring(7);
+        try {
+          const decodedToken = await auth.verifyIdToken(idToken);
+          authUser = {
+            uid: decodedToken.uid,
+            token: decodedToken,
+          };
+        } catch (authError) {
+          console.error("verifyIdToken error in createUserByAdminHttp:", authError);
+          throw new HttpsError("unauthenticated", "Invalid or expired token.");
+        }
+      }
+
+      if (!authUser) {
+        throw new HttpsError("unauthenticated", "Authentication required.");
+      }
+
+      const result = await createUserByAdminInternal({
+        auth: authUser,
+        data: req.body?.data || req.body || {},
+      });
+
+      res.status(200).json({ result });
+    } catch (error) {
+      const normalized = error instanceof HttpsError
+        ? error
+        : mapCreateUserError(error);
+
+      console.error("createUserByAdminHttp error:", {
+        method: req.method,
+        origin: req.get("origin") || null,
+        userAgent: req.get("user-agent") || null,
+        code: normalized.code || null,
+        message: normalized.message || String(error),
+      });
+
+      res
+        .status(httpStatusForHttpsErrorCode(normalized.code))
+        .json(toCallableErrorBody(normalized));
     }
   }
 );
@@ -1308,6 +1907,715 @@ exports.createUserByAdmin = onCall(
 //   commission = transaction.amount * COMMISSION_RATE
 //   Stored in paise (integer) to prevent floating-point errors
 //
+exports.recordLoginActivity = onCall(
+  {
+    region: "us-central1",
+    enforceAppCheck: false,
+  },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentication required.");
+    }
+
+    await db.collection("users").doc(request.auth.uid).set({
+      loginActivity: {
+        lastLoginAt: FieldValue.serverTimestamp(),
+        lastLoginProvider: "password",
+      },
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    await writeActivityLog({
+      userId: request.auth.uid,
+      action: "auth.login",
+      details: "User signed in",
+      targetType: "user",
+      targetId: request.auth.uid,
+      metadata: { type: "auth_login" },
+    }).catch(() => {});
+
+    return { success: true };
+  }
+);
+
+exports.completeFirstLoginPasswordChange = onCall(
+  {
+    region: "us-central1",
+    enforceAppCheck: false,
+  },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentication required.");
+    }
+
+    await db.collection("users").doc(request.auth.uid).set({
+      mustChangePassword: false,
+      passwordChangedAt: FieldValue.serverTimestamp(),
+      loginActivity: {
+        lastPasswordResetAt: FieldValue.serverTimestamp(),
+      },
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    await writeActivityLog({
+      userId: request.auth.uid,
+      action: "auth.password_changed",
+      details: "Completed required first-login password change",
+      targetType: "user",
+      targetId: request.auth.uid,
+      metadata: { type: "first_login_password_change" },
+    }).catch(() => {});
+
+    return { success: true };
+  }
+);
+
+exports.createInvestmentPlan = onCall(
+  {
+    region: "us-central1",
+    enforceAppCheck: false,
+  },
+  async (request) => {
+    const { callerUid, callerSnapshot } = await requireAdminCaller(request);
+    const data = request.data || {};
+    const planName = sanitizeText(data.planName, 120);
+    const requiredAmount = parseCurrencyAmount(data.requiredAmount, "Required amount");
+    const durationMonths = Number(data.durationMonths);
+    const monthlyReturn = parseCurrencyAmount(data.monthlyReturn, "Monthly return");
+
+    if (!planName) {
+      throw new HttpsError("invalid-argument", "Plan name is required.");
+    }
+    if (!Number.isInteger(durationMonths) || durationMonths <= 0 || durationMonths > 240) {
+      throw new HttpsError("invalid-argument", "Duration must be a valid number of months.");
+    }
+
+    const totalExpectedReturn = Number(data.totalExpectedReturn || monthlyReturn * durationMonths);
+    const maturityAmount = Number(data.maturityAmount || requiredAmount + totalExpectedReturn);
+    const planRef = db.collection("investmentPlans").doc();
+    const payload = {
+      planName,
+      requiredAmount,
+      durationMonths,
+      monthlyReturn,
+      totalExpectedReturn: Math.round(totalExpectedReturn),
+      maturityAmount: Math.round(maturityAmount),
+      payoutFrequency: sanitizeText(data.payoutFrequency || "monthly", 30) || "monthly",
+      activationRule: sanitizeText(data.activationRule || "full_funding_required", 60) || "full_funding_required",
+      status: data.status === "inactive" ? "inactive" : "active",
+      createdById: callerUid,
+      createdByName: callerSnapshot.name || "",
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+
+    await planRef.set(payload);
+    await writeActivityLog({
+      userId: callerUid,
+      action: "investment_plan.create",
+      details: `Created investment plan "${planName}"`,
+      targetType: "investmentPlan",
+      targetId: planRef.id,
+      metadata: { type: "investment_plan_create", planName },
+    }).catch(() => {});
+
+    return { success: true, id: planRef.id };
+  }
+);
+
+exports.createInvestmentForCustomer = onCall(
+  {
+    region: "us-central1",
+    enforceAppCheck: false,
+  },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentication required.");
+    }
+
+    const callerUid = request.auth.uid;
+    const callerRole = await resolveCallerRole(request);
+    const callerSnapshot = await resolveCallerIdentity(request);
+    if (!["admin", "staff", "agent"].includes(callerRole)) {
+      throw new HttpsError("permission-denied", "Only admin, staff, or agent users can create investments.");
+    }
+
+    const customerId = sanitizeText(request.data?.customerId, 128);
+    const planId = sanitizeText(request.data?.planId, 128);
+    if (!customerId || !planId) {
+      throw new HttpsError("invalid-argument", "Customer and plan are required.");
+    }
+
+    const { customerData } = await assertManagedCustomerScope(customerId, callerUid, callerRole);
+    const planRef = db.collection("investmentPlans").doc(planId);
+    const planSnap = await planRef.get();
+    if (!planSnap.exists || planSnap.data().status === "inactive") {
+      throw new HttpsError("not-found", "Active investment plan not found.");
+    }
+
+    const planSnapshot = buildInvestmentPlanSnapshot(planSnap.data(), planId);
+    const investmentRef = db.collection("investments").doc();
+    await investmentRef.set({
+      customerId,
+      customerCode: customerData.customerId || "",
+      customerName: customerData.displayName || "",
+      planId,
+      planSnapshot,
+      requiredAmount: planSnapshot.requiredAmount,
+      fundedAmount: 0,
+      remainingFundingAmount: planSnapshot.requiredAmount,
+      fundingStatus: "pending",
+      lifecycleStatus: "pending_activation",
+      startDate: null,
+      maturityDate: null,
+      closureDate: null,
+      finalReturnAmount: 0,
+      referrerId: customerData.referrerId || "",
+      referralPath: normalizeReferralPath(customerData.referralPath || []),
+      assignedAgentId: customerData.assignedAgentId || customerData.onboardedByAgent || "",
+      assignedAgentName: customerData.assignedAgentName || "",
+      assignedStaffId: customerData.assignedStaffId || "",
+      assignedStaffName: customerData.assignedStaffName || "",
+      createdById: callerUid,
+      createdByName: callerSnapshot.name || "",
+      createdByRole: callerRole,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    await createUserNotification(customerId, {
+      title: "Investment selected",
+      message: `${planSnapshot.planName} is ready for funding.`,
+      type: "info",
+      link: "/investments",
+      metadata: { investmentId: investmentRef.id },
+    });
+
+    return { success: true, id: investmentRef.id };
+  }
+);
+
+exports.submitInvestmentFundingRequest = onCall(
+  {
+    region: "us-central1",
+    enforceAppCheck: false,
+  },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentication required.");
+    }
+
+    const callerUid = request.auth.uid;
+    const callerRole = await resolveCallerRole(request);
+    if (callerRole !== "customer") {
+      throw new HttpsError("permission-denied", "Only customers can submit funding requests.");
+    }
+
+    const investmentId = sanitizeText(request.data?.investmentId, 128);
+    const amount = parseCurrencyAmount(request.data?.amount, "Payment amount");
+    const paymentMethod = normalizePaymentMethod(request.data?.paymentMethod || "UPI");
+    const transactionReference = sanitizeText(request.data?.transactionReference, 120).toUpperCase();
+    const paymentDate = sanitizeText(request.data?.paymentDate, 40);
+    const receipt = normalizeReceiptMetadata(request.data?.receipt);
+
+    if (!investmentId) {
+      throw new HttpsError("invalid-argument", "Investment is required.");
+    }
+    if (!transactionReference && !["Cash", "Office Collection"].includes(paymentMethod)) {
+      throw new HttpsError("invalid-argument", "UTR or transaction reference is required.");
+    }
+
+    const investmentRef = db.collection("investments").doc(investmentId);
+    const investmentSnap = await investmentRef.get();
+    if (!investmentSnap.exists || investmentSnap.data().customerId !== callerUid) {
+      throw new HttpsError("not-found", "Investment not found.");
+    }
+
+    if (transactionReference) {
+      const duplicateSnap = await db.collection("investmentFundingRequests")
+        .where("transactionReference", "==", transactionReference)
+        .where("status", "in", ["pending", "approved"])
+        .limit(1)
+        .get();
+      if (!duplicateSnap.empty) {
+        throw new HttpsError("already-exists", "This UTR/reference has already been submitted.");
+      }
+    }
+
+    const requestRef = db.collection("investmentFundingRequests").doc();
+    const investmentData = investmentSnap.data();
+    await requestRef.set({
+      customerId: callerUid,
+      customerCode: investmentData.customerCode || "",
+      customerName: investmentData.customerName || "",
+      investmentId,
+      planId: investmentData.planSnapshot?.planId || investmentData.planId || "",
+      planName: investmentData.planSnapshot?.planName || "",
+      assignedStaffId: investmentData.assignedStaffId || "",
+      assignedAgentId: investmentData.assignedAgentId || "",
+      paymentMethod,
+      submittedAmount: amount,
+      approvedAmount: 0,
+      excessAmount: 0,
+      transactionReference,
+      paymentDate: paymentDate || null,
+      receipt,
+      status: "pending",
+      verificationStatus: "pending",
+      remarks: "",
+      rejectionReason: "",
+      submittedById: callerUid,
+      submittedByRole: callerRole,
+      submittedAt: FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    await createUserNotification(callerUid, {
+      title: "Funding request submitted",
+      message: `Your ${paymentMethod} payment of ${amount} is pending verification.`,
+      type: "info",
+      link: "/investments",
+      metadata: { investmentId, fundingRequestId: requestRef.id },
+    });
+
+    return { success: true, id: requestRef.id };
+  }
+);
+
+exports.createOfficeCollection = onCall(
+  {
+    region: "us-central1",
+    enforceAppCheck: false,
+  },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentication required.");
+    }
+
+    const callerUid = request.auth.uid;
+    const callerRole = await resolveCallerRole(request);
+    const callerSnapshot = await resolveCallerIdentity(request);
+    if (!["admin", "staff"].includes(callerRole)) {
+      throw new HttpsError("permission-denied", "Only admin or staff can record office collections.");
+    }
+
+    const investmentId = sanitizeText(request.data?.investmentId, 128);
+    const amount = parseCurrencyAmount(request.data?.amount, "Collected amount");
+    const paymentMethod = normalizePaymentMethod(request.data?.paymentMethod || "Office Collection");
+    const transactionReference = sanitizeText(request.data?.transactionReference || `OFFICE-${Date.now()}`, 120).toUpperCase();
+    const notes = sanitizeText(request.data?.notes, 500);
+
+    if (!["Cash", "Office Collection"].includes(paymentMethod)) {
+      throw new HttpsError("invalid-argument", "Office collections must use Cash or Office Collection.");
+    }
+
+    const investmentSnap = await db.collection("investments").doc(investmentId).get();
+    if (!investmentSnap.exists) {
+      throw new HttpsError("not-found", "Investment not found.");
+    }
+
+    const investmentData = investmentSnap.data();
+    await assertManagedCustomerScope(investmentData.customerId, callerUid, callerRole);
+
+    const requestRef = db.collection("investmentFundingRequests").doc();
+    await requestRef.set({
+      customerId: investmentData.customerId,
+      customerCode: investmentData.customerCode || "",
+      customerName: investmentData.customerName || "",
+      investmentId,
+      planId: investmentData.planSnapshot?.planId || investmentData.planId || "",
+      planName: investmentData.planSnapshot?.planName || "",
+      assignedStaffId: investmentData.assignedStaffId || "",
+      assignedAgentId: investmentData.assignedAgentId || "",
+      paymentMethod,
+      submittedAmount: amount,
+      approvedAmount: 0,
+      excessAmount: 0,
+      transactionReference,
+      paymentDate: new Date().toISOString().slice(0, 10),
+      receipt: null,
+      status: "pending",
+      verificationStatus: "pending",
+      remarks: notes,
+      rejectionReason: "",
+      collectedByStaffId: callerUid,
+      collectedByStaffName: callerSnapshot.name || "",
+      submittedById: callerUid,
+      submittedByRole: callerRole,
+      submittedAt: FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    return { success: true, id: requestRef.id };
+  }
+);
+
+exports.verifyInvestmentFundingRequest = onCall(
+  {
+    region: "us-central1",
+    enforceAppCheck: false,
+  },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentication required.");
+    }
+
+    const callerUid = request.auth.uid;
+    const callerRole = await resolveCallerRole(request);
+    const callerSnapshot = await resolveCallerIdentity(request);
+    if (!["admin", "staff"].includes(callerRole)) {
+      throw new HttpsError("permission-denied", "Only admin or staff can verify funding requests.");
+    }
+
+    const fundingRequestId = sanitizeText(request.data?.fundingRequestId, 128);
+    const action = sanitizeText(request.data?.action, 20).toLowerCase();
+    const remarks = sanitizeText(request.data?.remarks, 500);
+    if (!fundingRequestId || !["approve", "reject"].includes(action)) {
+      throw new HttpsError("invalid-argument", "Funding request and action are required.");
+    }
+    if (action === "reject" && !remarks) {
+      throw new HttpsError("invalid-argument", "Rejection reason is required.");
+    }
+
+    const requestRef = db.collection("investmentFundingRequests").doc(fundingRequestId);
+    let notificationTarget = "";
+    let notificationPayload = null;
+    let activatedInvestment = false;
+
+    await db.runTransaction(async (transaction) => {
+      const requestSnap = await transaction.get(requestRef);
+      if (!requestSnap.exists) {
+        throw new HttpsError("not-found", "Funding request not found.");
+      }
+
+      const requestData = requestSnap.data();
+      if (requestData.status !== "pending") {
+        throw new HttpsError("failed-precondition", "Only pending funding requests can be verified.");
+      }
+
+      const investmentRef = db.collection("investments").doc(requestData.investmentId);
+      const investmentSnap = await transaction.get(investmentRef);
+      if (!investmentSnap.exists) {
+        throw new HttpsError("not-found", "Investment not found.");
+      }
+
+      const investmentData = investmentSnap.data();
+      if (callerRole === "staff" && investmentData.assignedStaffId !== callerUid && investmentData.createdById !== callerUid) {
+        throw new HttpsError("permission-denied", "You can only verify funding for managed investors.");
+      }
+
+      if (action === "reject") {
+        transaction.update(requestRef, {
+          status: "rejected",
+          verificationStatus: "rejected",
+          rejectionReason: remarks,
+          remarks,
+          verifiedById: callerUid,
+          verifiedByName: callerSnapshot.name || "",
+          verifiedByRole: callerRole,
+          verifiedAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        notificationTarget = requestData.customerId;
+        notificationPayload = {
+          title: "Funding request rejected",
+          message: remarks,
+          type: "warning",
+          link: "/investments",
+          metadata: { fundingRequestId, investmentId: requestData.investmentId },
+        };
+        return;
+      }
+
+      const settings = await getGlobalAppSettings();
+      const overpaymentMode = getOverpaymentMode(settings);
+      const requiredAmount = Number(investmentData.requiredAmount || investmentData.planSnapshot?.requiredAmount || 0);
+      const currentFunded = Number(investmentData.fundedAmount || 0);
+      const remaining = Math.max(0, requiredAmount - currentFunded);
+      const submittedAmount = Number(requestData.submittedAmount || 0);
+
+      if (remaining <= 0) {
+        throw new HttpsError("failed-precondition", "Investment is already fully funded.");
+      }
+      if (submittedAmount > remaining && overpaymentMode === OVERPAYMENT_MODES.REJECT) {
+        throw new HttpsError("failed-precondition", "Payment exceeds remaining funding amount.");
+      }
+
+      const approvedAmount = submittedAmount > remaining && overpaymentMode === OVERPAYMENT_MODES.PARTIAL
+        ? remaining
+        : submittedAmount;
+      const excessAmount = Math.max(0, submittedAmount - approvedAmount);
+      const nextFundedAmount = currentFunded + approvedAmount;
+      const nextRemaining = Math.max(0, requiredAmount - nextFundedAmount);
+      const nextFundingStatus = resolveFundingStatus({
+        fundedAmount: nextFundedAmount,
+        requiredAmount,
+      });
+
+      transaction.update(requestRef, {
+        status: "approved",
+        verificationStatus: "approved",
+        approvedAmount,
+        excessAmount,
+        overpaymentMode,
+        remarks,
+        verifiedById: callerUid,
+        verifiedByName: callerSnapshot.name || "",
+        verifiedByRole: callerRole,
+        verifiedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      transaction.update(investmentRef, {
+        fundedAmount: nextFundedAmount,
+        remainingFundingAmount: nextRemaining,
+        fundingStatus: nextFundingStatus,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      const txRef = db.collection("transactions").doc();
+      transaction.set(txRef, {
+        customerId: requestData.customerId,
+        amount: approvedAmount,
+        type: requestData.paymentMethod === "Cash" || requestData.paymentMethod === "Office Collection"
+          ? "office_collection"
+          : "investment_funding",
+        status: "completed",
+        investmentId: requestData.investmentId,
+        fundingRequestId,
+        paymentMethod: requestData.paymentMethod,
+        transactionReference: requestData.transactionReference || "",
+        staffId: callerRole === "staff" ? callerUid : "",
+        assignedStaffId: investmentData.assignedStaffId || "",
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        effectiveDate: FieldValue.serverTimestamp(),
+      });
+
+      if (excessAmount > 0 && overpaymentMode === OVERPAYMENT_MODES.CREDIT) {
+        const creditRef = db.collection("investmentCredits").doc();
+        transaction.set(creditRef, {
+          customerId: requestData.customerId,
+          investmentId: requestData.investmentId,
+          fundingRequestId,
+          amount: excessAmount,
+          status: "available",
+          createdAt: FieldValue.serverTimestamp(),
+          createdById: callerUid,
+        });
+      }
+
+      if (nextFundingStatus === "fully_funded") {
+        const activationData = {
+          ...investmentData,
+          fundedAmount: nextFundedAmount,
+          fundingStatus: nextFundingStatus,
+        };
+        activatedInvestment = await applyInvestmentActivationIfEligible({
+          transaction,
+          investmentRef,
+          investmentData: activationData,
+          approverSnapshot: callerSnapshot,
+          finalFundingApprovedAt: new Date(),
+        });
+      }
+
+      notificationTarget = requestData.customerId;
+      notificationPayload = {
+        title: activatedInvestment ? "Investment activated" : "Funding request approved",
+        message: activatedInvestment
+          ? "Your investment is fully funded and has been activated."
+          : `Funding of ${approvedAmount} has been approved.`,
+        type: "success",
+        link: "/investments",
+        metadata: { fundingRequestId, investmentId: requestData.investmentId },
+      };
+    });
+
+    if (notificationTarget && notificationPayload) {
+      await createUserNotification(notificationTarget, notificationPayload);
+    }
+
+    await writeActivityLog({
+      userId: callerUid,
+      action: `investment_funding.${action}`,
+      details: `${action === "approve" ? "Approved" : "Rejected"} funding request ${fundingRequestId}`,
+      targetType: "investmentFundingRequest",
+      targetId: fundingRequestId,
+      metadata: { type: "investment_funding_verification", action },
+    }).catch(() => {});
+
+    return { success: true, activated: activatedInvestment };
+  }
+);
+
+exports.approveInvestmentPayout = onCall(
+  {
+    region: "us-central1",
+    enforceAppCheck: false,
+  },
+  async (request) => {
+    const { callerUid, callerSnapshot } = await requireAdminCaller(request);
+    const payoutId = sanitizeText(request.data?.payoutId, 128);
+    const actualPaidDateInput = sanitizeText(request.data?.actualPaidDate, 40);
+    const transactionReference = sanitizeText(request.data?.transactionReference, 120);
+
+    if (!payoutId || !transactionReference) {
+      throw new HttpsError("invalid-argument", "Payout and transaction reference are required.");
+    }
+
+    let customerId = "";
+    let investmentId = "";
+
+    await db.runTransaction(async (transaction) => {
+      const payoutRef = db.collection("investmentPayouts").doc(payoutId);
+      const payoutSnap = await transaction.get(payoutRef);
+      if (!payoutSnap.exists) {
+        throw new HttpsError("not-found", "Payout not found.");
+      }
+
+      const payoutData = payoutSnap.data();
+      if (!["pending", "scheduled", "overdue"].includes(payoutData.status)) {
+        throw new HttpsError("failed-precondition", "Only unpaid payouts can be approved.");
+      }
+
+      const investmentRef = db.collection("investments").doc(payoutData.investmentId);
+      const investmentSnap = await transaction.get(investmentRef);
+      if (!investmentSnap.exists) {
+        throw new HttpsError("not-found", "Investment not found.");
+      }
+
+      const remainingPayoutsSnap = await transaction.get(
+        db.collection("investmentPayouts")
+          .where("investmentId", "==", payoutData.investmentId)
+          .where("status", "in", ["pending", "scheduled", "overdue"])
+      );
+
+      const actualPaidDate = actualPaidDateInput ? new Date(actualPaidDateInput) : new Date();
+      customerId = payoutData.customerId;
+      investmentId = payoutData.investmentId;
+
+      transaction.update(payoutRef, {
+        status: "paid",
+        actualPaidDate,
+        transactionReference,
+        approvedById: callerUid,
+        approvedByName: callerSnapshot.name || "",
+        approvedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      const txRef = db.collection("transactions").doc();
+      transaction.set(txRef, {
+        customerId: payoutData.customerId,
+        amount: Number(payoutData.amount || 0),
+        type: "investment_payout",
+        status: "completed",
+        investmentId: payoutData.investmentId,
+        payoutId,
+        transactionReference,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        effectiveDate: actualPaidDate,
+      });
+
+      if (remainingPayoutsSnap.docs.length === 1 && remainingPayoutsSnap.docs[0].id === payoutId) {
+        transaction.update(investmentRef, {
+          lifecycleStatus: "closed",
+          maturityDate: actualPaidDate,
+          closureDate: actualPaidDate,
+          finalReturnAmount: FieldValue.increment(Number(payoutData.amount || 0)),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+    });
+
+    if (customerId) {
+      await createUserNotification(customerId, {
+        title: "Payout paid",
+        message: "Your investment payout has been marked as paid.",
+        type: "success",
+        link: "/investments",
+        metadata: { payoutId, investmentId },
+      });
+    }
+
+    return { success: true };
+  }
+);
+
+exports.recordInvestmentPayout = onCall(
+  {
+    region: "us-central1",
+    enforceAppCheck: false,
+  },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentication required.");
+    }
+
+    const callerUid = request.auth.uid;
+    const callerRole = await resolveCallerRole(request);
+    const callerSnapshot = await resolveCallerIdentity(request);
+    if (!["admin", "staff"].includes(callerRole)) {
+      throw new HttpsError("permission-denied", "Only admin or staff can record payouts.");
+    }
+
+    const payoutId = sanitizeText(request.data?.payoutId, 128);
+    const actualPaidDateInput = sanitizeText(request.data?.actualPaidDate, 40);
+    const transactionReference = sanitizeText(request.data?.transactionReference, 120);
+    const remarks = sanitizeText(request.data?.remarks, 500);
+    if (!payoutId || !transactionReference) {
+      throw new HttpsError("invalid-argument", "Payout and transaction reference are required.");
+    }
+
+    const payoutRef = db.collection("investmentPayouts").doc(payoutId);
+    const payoutSnap = await payoutRef.get();
+    if (!payoutSnap.exists) {
+      throw new HttpsError("not-found", "Payout not found.");
+    }
+
+    const payoutData = payoutSnap.data();
+    const investmentSnap = await db.collection("investments").doc(payoutData.investmentId).get();
+    if (!investmentSnap.exists) {
+      throw new HttpsError("not-found", "Investment not found.");
+    }
+    const investmentData = investmentSnap.data();
+
+    if (callerRole === "staff" && investmentData.assignedStaffId !== callerUid && investmentData.createdById !== callerUid) {
+      throw new HttpsError("permission-denied", "You can only record payouts for managed investors.");
+    }
+    if (!["pending", "scheduled", "overdue"].includes(payoutData.status)) {
+      throw new HttpsError("failed-precondition", "Only unpaid payouts can be recorded.");
+    }
+
+    await payoutRef.update({
+      payoutRecorded: true,
+      recordedById: callerUid,
+      recordedByName: callerSnapshot.name || "",
+      recordedByRole: callerRole,
+      recordedAt: FieldValue.serverTimestamp(),
+      proposedActualPaidDate: actualPaidDateInput ? new Date(actualPaidDateInput) : new Date(),
+      proposedTransactionReference: transactionReference,
+      payoutRemarks: remarks,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    await writeActivityLog({
+      userId: callerUid,
+      action: "investment_payout.record",
+      details: `Recorded payout ${payoutId} for admin approval`,
+      targetType: "investmentPayout",
+      targetId: payoutId,
+      metadata: { type: "investment_payout_record", investmentId: payoutData.investmentId },
+    }).catch(() => {});
+
+    return { success: true };
+  }
+);
+
 const COMMISSION_RATE = 0.02; // 2%
 
 exports.onTransactionCreate = onDocumentCreated(

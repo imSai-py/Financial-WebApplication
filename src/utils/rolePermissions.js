@@ -169,7 +169,7 @@ export function getNavItems(role) {
     { label: 'My Portfolio',  path: '/portfolio',      icon: 'Briefcase',       roles: ['agent'] },
     { label: 'Customers',     path: '/customers',     icon: 'Users',           roles: ['admin', 'staff'] },
     { label: 'Transactions',  path: '/transactions',  icon: 'ArrowLeftRight',  roles: ['admin', 'staff', 'customer', 'agent'] },
-    { label: 'My Loans',      path: '/loans',          icon: 'Landmark',        roles: ['customer'] },
+    { label: 'Investments',   path: '/investments',    icon: 'Landmark',        roles: ['admin', 'staff', 'customer', 'agent'] },
     { label: 'Tasks',         path: '/tasks',          icon: 'CheckSquare',     roles: ['admin', 'staff', 'agent'] },
     { label: 'Commissions',   path: '/commissions',    icon: 'IndianRupee',     roles: ['admin', 'agent'] },
     { label: 'Reports',       path: '/reports',        icon: 'BarChart3',       roles: ['admin', 'staff'] },

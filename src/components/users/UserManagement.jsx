@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   UserCog, Plus, Edit2, Trash2, ShieldCheck, ShieldOff,
-  UserCheck, UserX, Filter, CreditCard
+  UserCheck
 } from 'lucide-react';
+import { httpsCallable } from 'firebase/functions';
 import { getAllUsers, suspendUser, reactivateUser } from '../../services/userService';
+import { functions } from '../../config/firebase';
 import DataTable from '../shared/DataTable';
 import StatusBadge from '../shared/StatusBadge';
 import LoadingSpinner from '../shared/LoadingSpinner';
@@ -92,7 +94,7 @@ export default function UserManagement() {
   }
 
   // Promote lead to active user
-  async function handlePromoteLead(user) {
+  async function _handlePromoteLead(user) {
     setActionLoading(user.id);
     try {
       const createUserByAdmin = httpsCallable(functions, 'createUserByAdmin');
@@ -356,6 +358,7 @@ export default function UserManagement() {
 
       {/* Modals */}
       <UserFormModal
+        key={`user-management-form-${formModal.open ? (formModal.user?.id || formModal.leadSource?.id || 'create') : 'closed'}`}
         isOpen={formModal.open}
         onClose={() => setFormModal({ open: false, user: null, leadSource: null })}
         user={formModal.user}

@@ -23,6 +23,13 @@ const DEFAULT_SETTINGS = {
   minTransactionAmount: 100,
   maxTransactionAmount: 10000000,
   autoApprovalThreshold: 50000,
+  overpaymentMode: 'reject_entire_request',
+  supportedPaymentMethods: ['UPI', 'Bank Transfer', 'Cash', 'Office Collection'],
+  paymentQrCodeUrl: '',
+  paymentUpiId: '',
+  paymentAccountHolderName: '',
+  paymentBankAccountNumber: '',
+  paymentIfscCode: '',
 
   // Operational Guardrails
   maintenanceMode: false,

@@ -50,6 +50,7 @@ export function AuthProvider({ children }) {
    * COST IMPACT: Reduces login from 2 Firestore reads → 1.
    */
   const loginProfileRef = useRef(null);
+  const loginVerificationRef = useRef({ active: false, uid: null });
 
   /**
    * Tracks the UID of the currently active listener.
@@ -188,6 +189,12 @@ export function AuthProvider({ children }) {
     let profileUnsub = null;
 
     const authUnsub = onAuthStateChanged(auth, (user) => {
+      const pendingLogin = loginVerificationRef.current;
+
+      if (user && pendingLogin.active && pendingLogin.uid === user.uid && !loginProfileRef.current) {
+        return;
+      }
+
       setCurrentUser(user);
 
       // Clean up previous user's profile listener
@@ -328,14 +335,17 @@ export function AuthProvider({ children }) {
       }
 
       const cred = await signInWithEmailAndPassword(auth, authEmail, password);
+      loginVerificationRef.current = { active: true, uid: cred.user.uid };
     
     // Force token refresh to pick up latest custom claims (e.g., after role change)
     await cred.user.getIdToken(true);
     
     const profileDoc = await getDoc(doc(db, 'users', cred.user.uid));
     if (!profileDoc.exists()) {
+      const err = new Error('Your account is missing a profile record. Contact an administrator.');
+      err.code = 'auth/profile-missing';
       await signOut(auth);
-      throw new Error('User profile not found. Contact an administrator.');
+      throw err;
     }
 
     const docData = profileDoc.data();
@@ -355,6 +365,11 @@ export function AuthProvider({ children }) {
 
     const profile = buildUserProfile(cred.user, docData, resolvedRole);
 
+    const recordLoginActivity = httpsCallable(functions, 'recordLoginActivity');
+    recordLoginActivity({}).catch((logError) => {
+      console.warn('Login activity logging failed:', logError);
+    });
+
     // Prime auth state before route changes so protected routes do not
     // briefly evaluate against stale signed-out context.
     activeUidRef.current = cred.user.uid;
@@ -362,6 +377,7 @@ export function AuthProvider({ children }) {
     setUserProfile(profile);
     setAuthInitialized(true);
     setLoading(false);
+    loginVerificationRef.current = { active: false, uid: null };
 
     // ── Cache for onAuthStateChanged ──
     // Store the profile so the listener (which fires next) can skip
@@ -371,6 +387,7 @@ export function AuthProvider({ children }) {
       return profile;
     } catch (err) {
       loginProfileRef.current = null;
+      loginVerificationRef.current = { active: false, uid: null };
 
       if (!auth.currentUser) {
         activeUidRef.current = null;

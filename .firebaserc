@@ -1,5 +1,15 @@
 {
-  "projects": {},
-  "targets": {},
+  "projects": {
+    "default": "financeflow-e3c5d"
+  },
+  "targets": {
+    "financeflow-e3c5d": {
+      "hosting": {
+        "default": [
+          "financeflow-e3c5d"
+        ]
+      }
+    }
+  },
   "etags": {}
 }

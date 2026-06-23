@@ -1,15 +1,18 @@
 import { useState, useEffect } from 'react';
-import { User, Mail, Phone, Shield, CreditCard, Calendar, Hash, Lock } from 'lucide-react';
+import { User, Mail, Phone, Shield, CreditCard, Calendar, Hash, Lock, Loader2 } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
 import Modal from '../shared/Modal';
 import PasswordField from '../shared/PasswordField';
 import { useAuth } from '../../contexts/AuthContext';
 import { functions } from '../../config/firebase';
-import { getReferralEligibleUsers, updateUser } from '../../services/userService';
+import { createUserByAdmin, getReferralEligibleUsers, setManagedUserPassword, updateUser } from '../../services/userService';
 import { logActivity } from '../../services/activityLogService';
 import { getCallableErrorMessage } from '../../utils/callableError';
 import { validators } from '../../utils/validation';
 import { useToast } from '../../contexts/ToastContext';
+import AutocompleteInput from '../shared/AutocompleteInput';
+import { INDIAN_STATES, MAJOR_INDIAN_CITIES } from '../../utils/indianAddressData';
+import { lookupPincode } from '../../utils/pincodeLookup';
 
 const ROLES = ['admin', 'staff', 'customer', 'agent'];
 const KYC_STATUSES = ['not_submitted', 'pending', 'verified', 'rejected'];
@@ -32,6 +35,33 @@ function buildInitialForm(defaultRole = 'customer') {
   };
 }
 
+function buildFormFromUserRecord(source, fallbackRole = 'customer') {
+  if (!source) {
+    return buildInitialForm(fallbackRole);
+  }
+
+  return {
+    displayName: source.displayName || '',
+    username: source.username || '',
+    email: source.email || '',
+    phone: source.phone || '',
+    role: source.role || fallbackRole,
+    directReferrerId: source.referrerId || '',
+    password: '',
+    confirmPassword: '',
+    panNumber: source.panNumber || '',
+    aadhaarLastFour: source.aadhaarLastFour || '',
+    dateOfBirth: source.dateOfBirth || '',
+    kycStatus: source.kycStatus || 'not_submitted',
+    address: {
+      street: source.address?.street || '',
+      city: source.address?.city || '',
+      state: source.address?.state || '',
+      zip: source.address?.zip || '',
+    },
+  };
+}
+
 export default function UserFormModal({ isOpen, onClose, user, leadSource = null, onSuccess, allowedRoles = ROLES, title }) {
   const { userProfile, refreshClaims } = useAuth();
   const { showToast } = useToast();
@@ -41,60 +71,59 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
   const canSelectReferrer = userProfile?.role === 'admin';
   const createRoleOptions = allowedRoles.length > 0 ? allowedRoles : ['customer'];
   const defaultCreateRole = createRoleOptions.includes('customer') ? 'customer' : createRoleOptions[0];
+  const [form, setForm] = useState(() => {
+    if (user) {
+      return buildFormFromUserRecord(user, 'customer');
+    }
 
-  const [form, setForm] = useState(() => buildInitialForm(defaultCreateRole));
+    if (leadSource) {
+      return buildFormFromUserRecord({ ...leadSource, role: 'customer' }, 'customer');
+    }
+
+    return buildInitialForm(defaultCreateRole);
+  });
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [referralOptions, setReferralOptions] = useState([]);
+  const [loadingPincode, setLoadingPincode] = useState(false);
 
   useEffect(() => {
-    if (user) {
-      setForm({
-        displayName: user.displayName || '',
-        username: user.username || '',
-        email: user.email || '',
-        phone: user.phone || '',
-        role: user.role || 'customer',
-        directReferrerId: user.referrerId || '',
-        password: '',
-        confirmPassword: '',
-        panNumber: user.panNumber || '',
-        aadhaarLastFour: user.aadhaarLastFour || '',
-        dateOfBirth: user.dateOfBirth || '',
-        kycStatus: user.kycStatus || 'not_submitted',
-        address: {
-          street: user.address?.street || '',
-          city: user.address?.city || '',
-          state: user.address?.state || '',
-          zip: user.address?.zip || '',
-        },
-      });
-    } else if (leadSource) {
-      setForm({
-        displayName: leadSource.displayName || '',
-        username: leadSource.username || '',
-        email: leadSource.email || '',
-        phone: leadSource.phone || '',
-        role: 'customer',
-        directReferrerId: leadSource.referrerId || '',
-        password: '',
-        confirmPassword: '',
-        panNumber: leadSource.panNumber || '',
-        aadhaarLastFour: leadSource.aadhaarLastFour || '',
-        dateOfBirth: leadSource.dateOfBirth || '',
-        kycStatus: leadSource.kycStatus || 'not_submitted',
-        address: {
-          street: leadSource.address?.street || '',
-          city: leadSource.address?.city || '',
-          state: leadSource.address?.state || '',
-          zip: leadSource.address?.zip || '',
-        },
-      });
-    } else {
-      setForm(buildInitialForm(defaultCreateRole));
+    const pin = form.address.zip?.trim();
+    if (pin && /^\d{6}$/.test(pin)) {
+      let active = true;
+      async function triggerLookup() {
+        setLoadingPincode(true);
+        try {
+          const result = await lookupPincode(pin);
+          if (active && result) {
+            setForm(prev => ({
+              ...prev,
+              address: {
+                ...prev.address,
+                city: result.city || prev.address.city,
+                state: result.state || prev.address.state
+              }
+            }));
+            showToast('Address auto-filled from PIN code!', 'success');
+          }
+        } catch (err) {
+          console.error('Pincode lookup error:', err);
+        } finally {
+          if (active) setLoadingPincode(false);
+        }
+      }
+      triggerLookup();
+      return () => {
+        active = false;
+      };
     }
-    setErrors({});
-  }, [user, leadSource, isOpen, defaultCreateRole]);
+  }, [form.address.zip, showToast]);
+  const isCustomerCreateRole = form.role === 'customer';
+  const isManagedPasswordRole = ['staff', 'agent'].includes(form.role);
+  const canManagePassword = canManageRoles && isManagedPasswordRole;
+  const shouldShowPasswordFields = !isEdit
+    ? (isCustomerCreateRole || isManagedPasswordRole)
+    : canManagePassword;
 
   useEffect(() => {
     if (!isOpen || isEdit || form.role !== 'customer' || !canSelectReferrer) return;
@@ -129,26 +158,29 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
   function validate() {
     const errs = {};
     const emailProvided = !!form.email.trim();
+    const isEditingManagedPassword = isEdit && canManagePassword && !!(form.password || form.confirmPassword);
     const nameErr = validators.required(form.displayName, 'Full name');
     if (nameErr) errs.displayName = nameErr;
 
-    const emailErr = validators.optionalEmail(form.email);
-    if (emailErr) errs.email = emailErr;
+    if (emailProvided) {
+      const emailErr = validators.optionalEmail(form.email);
+      if (emailErr) errs.email = emailErr;
+    }
 
-    const phoneErr = validators.phone(form.phone);
-    if (phoneErr) errs.phone = phoneErr;
-
-    if (!isEdit && form.role === 'customer' && !emailProvided) {
+    if (!isEdit) {
       const usernameErr = validators.username(form.username);
       if (usernameErr) errs.username = usernameErr;
 
       const requiredPhoneErr = validators.required(form.phone, 'Phone number');
       if (requiredPhoneErr) {
         errs.phone = requiredPhoneErr;
+      } else {
+        const phoneErr = validators.phone(form.phone);
+        if (phoneErr) errs.phone = phoneErr;
       }
-    } else if (!isEdit && form.role === 'customer' && form.username.trim()) {
-      const usernameErr = validators.username(form.username);
-      if (usernameErr) errs.username = usernameErr;
+    } else {
+      const phoneErr = validators.phone(form.phone);
+      if (phoneErr) errs.phone = phoneErr;
     }
 
     const panErr = validators.panNumber(form.panNumber);
@@ -164,7 +196,7 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
       errs.role = 'You do not have permission to create that user type';
     }
 
-    if (!isEdit && form.role === 'customer') {
+    if ((!isEdit && (isCustomerCreateRole || isManagedPasswordRole)) || isEditingManagedPassword) {
       const passwordErr = validators.password(form.password);
       if (passwordErr) errs.password = passwordErr;
 
@@ -206,6 +238,11 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
         }
 
         await updateUser(user.id, updateData);
+
+        if (canManagePassword && form.password) {
+          await setManagedUserPassword(user.id, form.password);
+        }
+
         await logActivity({
           userId: userProfile.uid,
           action: 'customer.update',
@@ -219,17 +256,15 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
           await setUserRole({ targetUid: user.id, newRole: form.role });
         }
 
-        showToast(`Updated ${form.displayName} successfully`, 'success');
       } else {
         await refreshClaims();
-        const createUserByAdmin = httpsCallable(functions, 'createUserByAdmin');
         await createUserByAdmin({
           email: form.email.trim() || undefined,
           displayName: form.displayName.trim(),
-          username: form.role === 'customer' ? (form.username.trim() || undefined) : undefined,
+          username: form.username.trim() || undefined,
           role: form.role,
           existingDocId: leadSource?.id || undefined,
-          password: form.role === 'customer' ? form.password : undefined,
+          password: shouldShowPasswordFields ? form.password : undefined,
           directReferrerId: canSelectReferrer && form.role === 'customer' ? (form.directReferrerId || undefined) : undefined,
           phone: form.phone?.trim() || null,
           panNumber: form.panNumber?.trim().toUpperCase() || null,
@@ -245,18 +280,29 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
         });
 
         showToast(
-          form.role === 'customer'
+          isCustomerCreateRole
             ? `${leadSource ? 'Activated' : 'Created'} customer "${form.displayName}" with a login account`
             : `Created ${form.role} "${form.displayName}" successfully`,
           'success'
         );
       }
 
+      if (isEdit && canManagePassword && form.password) {
+        showToast(`Updated ${form.role} "${form.displayName}" and set a new password`, 'success');
+      } else if (isEdit) {
+        showToast(`Updated ${form.displayName} successfully`, 'success');
+      }
+
       onSuccess?.();
       onClose();
     } catch (err) {
       console.error('UserFormModal error:', err);
-      const msg = getCallableErrorMessage(err, 'Failed to create customer account');
+      const fallbackMessage = isEdit
+        ? 'Failed to update user account'
+        : isCustomerCreateRole
+          ? 'Failed to create customer account'
+          : `Failed to create ${form.role} account`;
+      const msg = getCallableErrorMessage(err, fallbackMessage);
       showToast(msg, 'error');
     }
 
@@ -293,22 +339,24 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
             {errors.displayName && <p style={errorStyle}>{errors.displayName}</p>}
           </div>
 
-          {!isEdit && form.role === 'customer' && (
+          {!isEdit && (
             <div style={inputStyle}>
-              <label style={labelStyle}><User size={14} /> Username {form.email.trim() ? '(Optional)' : '*'}</label>
-              <input className="input" name="username" value={form.username} onChange={handleChange} placeholder="customer.username" />
+              <label style={labelStyle}><User size={14} /> Username *</label>
+              <input className="input" name="username" value={form.username} onChange={handleChange} placeholder="username" />
               {errors.username && <p style={errorStyle}>{errors.username}</p>}
             </div>
           )}
 
           <div style={inputStyle}>
-            <label style={labelStyle}><Mail size={14} /> Email (Optional)</label>
+            <label style={labelStyle}>
+              <Mail size={14} /> Email (Optional)
+            </label>
             <input className="input" name="email" value={form.email} onChange={handleChange} placeholder="user@example.com" disabled={isEdit} style={isEdit ? { opacity: 0.6 } : {}} />
             {errors.email && <p style={errorStyle}>{errors.email}</p>}
           </div>
 
           <div style={inputStyle}>
-            <label style={labelStyle}><Phone size={14} /> Phone {!isEdit && form.role === 'customer' && !form.email.trim() ? '*' : '(Optional)'}</label>
+            <label style={labelStyle}><Phone size={14} /> Phone Number {!isEdit ? '*' : '(Optional)'}</label>
             <input className="input" name="phone" value={form.phone} onChange={handleChange} placeholder="+91 98765 43210" />
             {errors.phone && <p style={errorStyle}>{errors.phone}</p>}
           </div>
@@ -344,7 +392,7 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
             )}
           </div>
 
-          {!isEdit && canSelectReferrer && form.role === 'customer' && (
+          {!isEdit && canSelectReferrer && isCustomerCreateRole && (
             <div style={inputStyle}>
               <label style={labelStyle}><User size={14} /> Direct Referrer</label>
               <select className="input" name="directReferrerId" value={form.directReferrerId} onChange={handleChange}>
@@ -358,26 +406,30 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
             </div>
           )}
 
-          {!isEdit && form.role === 'customer' && (
+          {shouldShowPasswordFields && (
             <>
               <div style={inputStyle}>
-                <label style={labelStyle}><Lock size={14} /> Password *</label>
+                <label style={labelStyle}>
+                  <Lock size={14} /> {!isEdit ? 'Password *' : 'Set New Password'}
+                </label>
                 <PasswordField
                   name="password"
                   value={form.password}
                   onChange={handleChange}
-                  placeholder="Set a strong password"
+                  placeholder={!isEdit ? 'Set a strong password' : 'Enter a new strong password'}
                 />
                 {errors.password && <p style={errorStyle}>{errors.password}</p>}
               </div>
 
               <div style={inputStyle}>
-                <label style={labelStyle}><Lock size={14} /> Confirm Password *</label>
+                <label style={labelStyle}>
+                  <Lock size={14} /> {!isEdit ? 'Confirm Password *' : 'Confirm New Password'}
+                </label>
                 <PasswordField
                   name="confirmPassword"
                   value={form.confirmPassword}
                   onChange={handleChange}
-                  placeholder="Confirm the password"
+                  placeholder={!isEdit ? 'Confirm the password' : 'Confirm the new password'}
                 />
                 {errors.confirmPassword && <p style={errorStyle}>{errors.confirmPassword}</p>}
               </div>
@@ -425,14 +477,49 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
             Address
           </h4>
           <input className="input" name="address.street" value={form.address.street} onChange={handleChange} placeholder="Street address" style={{ marginBottom: '0.5rem' }} />
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }}>
-            <input className="input" name="address.city" value={form.address.city} onChange={handleChange} placeholder="City" />
-            <input className="input" name="address.state" value={form.address.state} onChange={handleChange} placeholder="State" />
-            <input className="input" name="address.zip" value={form.address.zip} onChange={handleChange} placeholder="PIN" />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem', alignItems: 'start' }}>
+            <div style={{ position: 'relative' }}>
+              <AutocompleteInput
+                name="address.city"
+                value={form.address.city}
+                onChange={handleChange}
+                suggestions={MAJOR_INDIAN_CITIES}
+                placeholder="City"
+                disabled={loadingPincode}
+              />
+              {loadingPincode && (
+                <Loader2
+                  size={14}
+                  className="animate-spin"
+                  style={{
+                    position: 'absolute',
+                    right: '10px',
+                    top: '12px',
+                    color: 'var(--color-primary-500)',
+                  }}
+                />
+              )}
+            </div>
+            <AutocompleteInput
+              name="address.state"
+              value={form.address.state}
+              onChange={handleChange}
+              suggestions={INDIAN_STATES}
+              placeholder="State"
+              disabled={loadingPincode}
+            />
+            <input
+              className="input"
+              name="address.zip"
+              value={form.address.zip}
+              onChange={handleChange}
+              placeholder="PIN"
+              maxLength={6}
+            />
           </div>
         </div>
 
-        {!isEdit && form.role === 'customer' && (
+        {!isEdit && isCustomerCreateRole && (
           <div style={{
             padding: '0.75rem 1rem',
             borderRadius: 'var(--radius-md)',
@@ -449,10 +536,24 @@ export default function UserFormModal({ isOpen, onClose, user, leadSource = null
           </div>
         )}
 
+        {isEdit && canManagePassword && (
+          <div style={{
+            padding: '0.75rem 1rem',
+            borderRadius: 'var(--radius-md)',
+            background: 'rgba(99,102,241,0.08)',
+            border: '1px solid rgba(99,102,241,0.2)',
+            marginBottom: '1.25rem',
+            fontSize: '0.8125rem',
+            color: 'var(--color-text-secondary)',
+          }}>
+            <strong style={{ color: 'var(--color-primary)' }}>Admin-only:</strong> Set a new password for this {form.role} account to replace the current login credentials.
+          </div>
+        )}
+
         <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
           <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
           <button type="submit" className="btn btn-primary" disabled={saving}>
-            {saving ? 'Saving...' : isEdit ? 'Save Changes' : isLeadPromotion ? 'Activate Customer' : form.role === 'customer' ? 'Create Customer' : 'Create User'}
+            {saving ? 'Saving...' : isEdit ? 'Save Changes' : isLeadPromotion ? 'Activate Customer' : isCustomerCreateRole ? 'Create Customer' : 'Create User'}
           </button>
         </div>
       </form>

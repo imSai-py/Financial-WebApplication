@@ -38,7 +38,7 @@ test.describe('Criterion 4: Responsiveness', () => {
     await loginAsAdmin(page);
   });
 
-  test('UI-01: Navigation Structure adapts to viewport', async ({ page, isMobile }) => {
+  test('UI-01: Navigation Structure adapts to viewport', async ({ page, isMobile: _isMobile }) => {
     await page.goto('/dashboard');
     
     const sidebar = page.locator('aside');

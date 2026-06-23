@@ -6,6 +6,7 @@ import NetworkGuard from '../shared/NetworkGuard';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import { useAuth } from '../../contexts/AuthContext';
 import SignOutConfirmDialog from './SignOutConfirmDialog';
+import FirstLoginPasswordModal from '../auth/FirstLoginPasswordModal';
 
 const COLLAPSE_KEY = 'ff_sidebar_collapsed';
 
@@ -16,7 +17,7 @@ export default function DashboardLayout() {
   const isMobile = useIsMobile();
   const location = useLocation();
   const navigate = useNavigate();
-  const { logout } = useAuth();
+  const { logout, userProfile, currentUser } = useAuth();
 
   // Persist collapsed state in localStorage
   const [collapsed, setCollapsed] = useState(() => {
@@ -30,7 +31,11 @@ export default function DashboardLayout() {
   function toggleCollapse() {
     setCollapsed(prev => {
       const next = !prev;
-      try { localStorage.setItem(COLLAPSE_KEY, String(next)); } catch {}
+      try {
+        localStorage.setItem(COLLAPSE_KEY, String(next));
+      } catch {
+        // Local storage can be blocked in private browsing or hardened browsers.
+      }
       return next;
     });
   }
@@ -119,6 +124,10 @@ export default function DashboardLayout() {
         }}
         onConfirm={handleConfirmSignOut}
         loading={signingOut}
+      />
+      <FirstLoginPasswordModal
+        isOpen={userProfile?.mustChangePassword === true}
+        currentUser={currentUser}
       />
     </NetworkGuard>
   );

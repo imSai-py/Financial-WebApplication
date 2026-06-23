@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Users as UsersIcon, Plus, Eye, Edit2, ShieldCheck, CalendarRange, BriefcaseBusiness } from 'lucide-react';
+import { Users as UsersIcon, Plus, Eye, Edit2, ShieldCheck, CalendarRange, BriefcaseBusiness, Landmark, Activity, TrendingUp, Loader2 } from 'lucide-react';
 import { getUsersByRole, getManagedCustomersByStaff } from '../../services/userService';
 import DataTable from '../shared/DataTable';
 import StatusBadge from '../shared/StatusBadge';
@@ -8,8 +8,9 @@ import Modal from '../shared/Modal';
 import UserFormModal from '../users/UserFormModal';
 import { formatDate } from '../../utils/formatDate';
 import { useAuth } from '../../contexts/AuthContext';
-import { useToast } from '../../contexts/ToastContext';
 import { useIsMobile } from '../../hooks/useMediaQuery';
+import { getLoansByCustomer } from '../../services/loanService';
+import { formatAmount } from '../../utils/formatCurrency';
 
 const KYC_COLORS = {
   verified:      { bg: 'rgba(16,185,129,0.15)', text: '#10b981' },
@@ -30,7 +31,6 @@ const FILTER_TABS = [
 
 export default function CustomerList() {
   const { isAdmin, userProfile } = useAuth();
-  const { showToast } = useToast();
   const isMobile = useIsMobile();
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -39,6 +39,35 @@ export default function CustomerList() {
   const [createModal, setCreateModal] = useState(false);
   const [filter, setFilter] = useState('all');
   const [dateFilters, setDateFilters] = useState({ startDate: '', endDate: '' });
+  const [customerLoans, setCustomerLoans] = useState([]);
+  const [loadingLoans, setLoadingLoans] = useState(false);
+
+  useEffect(() => {
+    if (!viewCustomer) {
+      setCustomerLoans([]);
+      return;
+    }
+
+    let active = true;
+    async function fetchLoans() {
+      setLoadingLoans(true);
+      try {
+        const loans = await getLoansByCustomer(viewCustomer.id);
+        if (active) {
+          setCustomerLoans(loans);
+        }
+      } catch (err) {
+        console.error('Error fetching customer loans:', err);
+      } finally {
+        if (active) setLoadingLoans(false);
+      }
+    }
+
+    fetchLoans();
+    return () => {
+      active = false;
+    };
+  }, [viewCustomer]);
 
   const isStaff = userProfile?.role === 'staff';
 
@@ -300,6 +329,7 @@ export default function CustomerList() {
           exportable
           exportFormats={['csv', 'xlsx']}
           exportFilename={isStaff ? 'staff-customers' : 'customers'}
+          onRowClick={isMobile ? (row) => setViewCustomer(row) : undefined}
         />
       </div>
 
@@ -342,12 +372,104 @@ export default function CustomerList() {
                 <span style={{ fontSize: '0.8125rem', fontWeight: 500, textTransform: 'capitalize' }}>{value || '—'}</span>
               </div>
             ))}
+
+            {/* Loans & Financials Section */}
+            <div style={{ marginTop: '1.5rem', paddingTop: '1.25rem', borderTop: '1px solid var(--color-border)' }}>
+              <h4 style={{ 
+                fontSize: '0.8125rem', 
+                fontWeight: 700, 
+                color: 'var(--color-text-muted)', 
+                textTransform: 'uppercase', 
+                letterSpacing: '0.05em', 
+                marginBottom: '1rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.375rem'
+              }}>
+                <Landmark size={14} /> Loans & Financials
+              </h4>
+
+              {loadingLoans ? (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '1.5rem 0' }}>
+                  <Loader2 className="animate-spin" size={20} style={{ color: 'var(--color-primary-500)' }} />
+                </div>
+              ) : customerLoans.length === 0 ? (
+                <p style={{ fontSize: '0.8125rem', color: 'var(--color-text-muted)', textAlign: 'center', padding: '1rem 0' }}>
+                  No active or past loans found for this customer.
+                </p>
+              ) : (
+                <div>
+                  {/* Loan stats cards grid */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1rem' }}>
+                    <div className="glass" style={{ padding: '0.75rem 1rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)' }}>
+                      <p style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)', fontWeight: 500 }}>Total Principal Taken</p>
+                      <p style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--color-text-primary)', marginTop: '0.125rem' }}>
+                        {formatAmount(customerLoans.reduce((sum, l) => sum + (l.principalAmount || 0), 0))}
+                      </p>
+                    </div>
+                    <div className="glass" style={{ padding: '0.75rem 1rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)' }}>
+                      <p style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)', fontWeight: 500 }}>Total Outstanding</p>
+                      <p style={{ 
+                        fontSize: '1rem', 
+                        fontWeight: 700, 
+                        color: customerLoans.reduce((sum, l) => sum + (l.remainingBalance || 0), 0) > 0 ? 'var(--color-warning)' : 'var(--color-success)', 
+                        marginTop: '0.125rem' 
+                      }}>
+                        {formatAmount(customerLoans.reduce((sum, l) => sum + (l.remainingBalance || 0), 0))}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Individual loans list */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '180px', overflowY: 'auto', paddingRight: '4px' }}>
+                    {customerLoans.map((loan) => (
+                      <div key={loan.id} style={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center', 
+                        padding: '0.625rem 0.75rem', 
+                        borderRadius: 'var(--radius-md)', 
+                        background: 'rgba(148,163,184,0.03)',
+                        border: '1px solid var(--color-border)'
+                      }}>
+                        <div>
+                          <p style={{ fontSize: '0.75rem', fontWeight: 600, textTransform: 'capitalize', color: 'var(--color-text-primary)' }}>
+                            {loan.loanType || 'Personal'} Loan
+                          </p>
+                          <p style={{ fontSize: '0.625rem', color: 'var(--color-text-muted)', marginTop: '0.125rem' }}>
+                            {formatAmount(loan.principalAmount || 0)} Principal · {loan.tenureMonths || 12} mo
+                          </p>
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <span style={{ 
+                            display: 'inline-block',
+                            padding: '0.15rem 0.4rem', 
+                            borderRadius: 'var(--radius-full)', 
+                            fontSize: '0.625rem', 
+                            fontWeight: 600, 
+                            textTransform: 'capitalize',
+                            background: loan.status === 'completed' ? 'rgba(34,197,94,0.15)' : loan.status === 'defaulted' ? 'rgba(239,68,68,0.15)' : 'rgba(99,102,241,0.15)',
+                            color: loan.status === 'completed' ? '#34d399' : loan.status === 'defaulted' ? '#f87171' : '#818cf8'
+                          }}>
+                            {loan.status || 'Active'}
+                          </span>
+                          <p style={{ fontSize: '0.6875rem', fontWeight: 600, color: 'var(--color-text-secondary)', marginTop: '0.125rem' }}>
+                            {formatAmount(loan.remainingBalance || 0)} due
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </Modal>
 
       {/* Edit Modal (reuses UserFormModal) */}
       <UserFormModal
+        key={`customer-edit-${editModal.open ? (editModal.user?.id || 'closed') : 'closed'}`}
         isOpen={editModal.open}
         onClose={() => setEditModal({ open: false, user: null })}
         user={editModal.user}
@@ -356,6 +478,7 @@ export default function CustomerList() {
 
       {/* Create Lead Modal */}
       <UserFormModal
+        key={`customer-create-${createModal ? 'open' : 'closed'}-${isStaff ? 'staff' : 'admin'}`}
         isOpen={createModal}
         onClose={() => setCreateModal(false)}
         user={null}

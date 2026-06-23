@@ -1,7 +1,9 @@
 import { initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 
-const app = initializeApp({ projectId: 'financeflow-mgmt-2026' });
+const projectId = process.env.FIREBASE_PROJECT_ID || 'finance-flow-825fd';
+
+const app = initializeApp({ projectId });
 const auth = getAuth(app);
 
 async function checkClaims() {
@@ -9,7 +11,7 @@ async function checkClaims() {
     const listUsersResult = await auth.listUsers(100);
     const users = listUsersResult.users;
     
-    console.log(`Found ${users.length} users. Checking claims...`);
+    console.log(`Found ${users.length} users in project ${projectId}. Checking claims...`);
     
     for (const u of users) {
       console.log(`User: ${u.email} | UID: ${u.uid}`);

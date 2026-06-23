@@ -1,33 +1,28 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { TrendingUp, UserRound, Lock, ArrowRight, ChevronLeft } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { TrendingUp, UserRound, Lock, ArrowRight } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { useSettings } from '../../contexts/SettingsContext';
 import { validateForm, validators } from '../../utils/validation';
 import PasswordField from '../shared/PasswordField';
 
-export default function LoginForm({ mode = 'general' }) {
+export default function LoginForm() {
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState({});
   const [loading, setLoading] = useState(false);
-  const { login, logout } = useAuth();
+  const { login } = useAuth();
   const { showToast } = useToast();
   const { settings } = useSettings();
   const navigate = useNavigate();
-  const isCustomerMode = mode === 'customer';
 
-  const pageTitle = isCustomerMode ? 'Customer login' : 'Welcome back';
-  const pageSubtitle = isCustomerMode
-    ? 'Sign in with your customer credentials to continue'
-    : 'Sign in to your account to continue';
-  const brandCopy = isCustomerMode
-    ? 'Secure customer access for viewing and managing your financial relationship'
-    : 'Secure financial management platform for your business operations';
-  const submitLabel = isCustomerMode ? 'Customer Sign In' : 'Sign In';
-  const helperText = 'Self-sign up is disabled. Customer accounts are created by authorized administrators, staff members, or agents, who provide login credentials directly.';
+  const pageTitle = 'Welcome back';
+  const pageSubtitle = 'Sign in to your account to continue';
+  const brandCopy = 'Secure financial management platform for all your business and customer operations';
+  const submitLabel = 'Sign In';
+  const helperText = 'Self-sign up is disabled. Accounts are created by authorized administrators, staff members, or agents, who provide login credentials directly.';
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -51,13 +46,6 @@ export default function LoginForm({ mode = 'general' }) {
     try {
       const profile = await login(normalizedIdentifier, password);
 
-      if (isCustomerMode && profile.role !== 'customer') {
-        await logout();
-        setError('This customer login is only for customer accounts. Staff, agents, and admins should use the main login page.');
-        setFieldErrors({});
-        return;
-      }
-
       const name = profile.displayName || 'User';
       const role = profile.role?.charAt(0).toUpperCase() + profile.role?.slice(1);
       showToast(`Welcome back, ${name}! Signed in as ${role}.`, 'success');
@@ -73,6 +61,7 @@ export default function LoginForm({ mode = 'general' }) {
         'auth/too-many-requests': 'Too many attempts. Please try again later.',
         'auth/invalid-credential': 'Invalid login credentials.',
         'auth/invalid-login-identifier': 'Invalid login credentials.',
+        'auth/profile-missing': 'Your account is missing a profile record. Contact an administrator.',
       };
       setError(map[err.code] || err.message || 'Login failed.');
       setFieldErrors({});
@@ -145,26 +134,6 @@ export default function LoginForm({ mode = 'general' }) {
               </div>
             </div>
           </div>
-
-          {isCustomerMode && (
-            <div style={{ marginBottom: '1rem' }}>
-              <Link
-                to="/login"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.375rem',
-                  color: 'var(--color-text-secondary)',
-                  textDecoration: 'none',
-                  fontSize: '0.8125rem',
-                  fontWeight: 500,
-                }}
-              >
-                <ChevronLeft size={16} />
-                Back to main login
-              </Link>
-            </div>
-          )}
 
           <h2 style={{ fontSize: '1.625rem', fontWeight: 700, marginBottom: '0.375rem' }}>{pageTitle}</h2>
           <p style={{ color: 'var(--color-text-secondary)', marginBottom: '2rem', fontSize: '0.9375rem' }}>
@@ -252,25 +221,6 @@ export default function LoginForm({ mode = 'general' }) {
                 <>{submitLabel} <ArrowRight size={18} /></>
               )}
             </button>
-
-            {!isCustomerMode && (
-              <Link
-                to="/customer-login"
-                className="btn btn-secondary btn-lg"
-                id="customer-login-link"
-                style={{
-                  width: '100%',
-                  fontSize: '0.9375rem',
-                  marginTop: '0.75rem',
-                  textDecoration: 'none',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                Are you a customer? Login here
-              </Link>
-            )}
           </form>
 
           <p style={{ textAlign: 'center', marginTop: '1.5rem', fontSize: '0.875rem', color: 'var(--color-text-secondary)' }}>

@@ -188,11 +188,11 @@ cd ..
 
 #### Option A: Use the Existing Firebase Project
 
-If you have been granted access to the `financeflow-mgmt-2026` Firebase project:
+If you have been granted access to the `finance-flow-825fd` Firebase project:
 
 ```bash
 firebase login
-firebase use financeflow-mgmt-2026
+firebase use finance-flow-825fd
 ```
 
 #### Option B: Create Your Own Firebase Project
@@ -204,17 +204,15 @@ firebase use financeflow-mgmt-2026
    - **Cloud Firestore** → Create database (start in test mode, then apply rules)
    - **Hosting** → Set up hosting
 
-3. Update the Firebase config in `src/config/firebase.js` with your project's credentials:
+3. Add your Firebase web app config to `.env` using Vite-prefixed variables:
 
-   ```javascript
-   const firebaseConfig = {
-     apiKey: "YOUR_API_KEY",
-     authDomain: "YOUR_PROJECT.firebaseapp.com",
-     projectId: "YOUR_PROJECT_ID",
-     storageBucket: "YOUR_PROJECT.firebasestorage.app",
-     messagingSenderId: "YOUR_SENDER_ID",
-     appId: "YOUR_APP_ID"
-   };
+   ```bash
+   VITE_FIREBASE_API_KEY=YOUR_API_KEY
+   VITE_FIREBASE_AUTH_DOMAIN=YOUR_PROJECT.firebaseapp.com
+   VITE_FIREBASE_PROJECT_ID=YOUR_PROJECT_ID
+   VITE_FIREBASE_STORAGE_BUCKET=YOUR_PROJECT.firebasestorage.app
+   VITE_FIREBASE_MESSAGING_SENDER_ID=YOUR_SENDER_ID
+   VITE_FIREBASE_APP_ID=YOUR_APP_ID
    ```
 
 4. Update `.firebaserc` with your project ID:
@@ -428,7 +426,7 @@ npm run test:rules
 
 See [`.env.example`](.env.example) for the full template.
 
-The Firebase client configuration is currently hardcoded in `src/config/firebase.js`. If you are connecting to a different Firebase project, update the config values in that file.
+The Firebase client configuration is read from `VITE_FIREBASE_*` environment variables. If you are connecting to a different Firebase project, update those values in your environment file before building or deploying.
 
 For admin scripts in `/scripts`, you need Firebase Application Default Credentials:
 

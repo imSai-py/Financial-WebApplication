@@ -13,7 +13,7 @@ import StatCard from '../shared/StatCard';
 import StatusBadge from '../shared/StatusBadge';
 import LoadingSpinner from '../shared/LoadingSpinner';
 import { formatAmount } from '../../utils/formatCurrency';
-import { formatDate, timeAgo } from '../../utils/formatDate';
+import { timeAgo } from '../../utils/formatDate';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
@@ -49,7 +49,7 @@ export default function AgentDashboard() {
 
   if (loading) return <LoadingSpinner text="Loading dashboard..." />;
 
-  const { transactions, tasks, commissions, customers } = data;
+  const { tasks, commissions, customers } = data;
   const totalCommissions = commissions.filter(c => c.status === 'paid').reduce((s, c) => s + (c.amount || 0), 0);
   const pendingCommissions = commissions.filter(c => c.status === 'pending').reduce((s, c) => s + (c.amount || 0), 0);
   const activeTasks = tasks.filter(t => t.status !== 'completed' && t.status !== 'cancelled').length;

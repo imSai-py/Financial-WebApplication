@@ -1,13 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Briefcase, UserPlus, Eye, Phone, Mail, Calendar,
-  CreditCard, MapPin, Users, Clock, ShieldCheck, Lock
+  CreditCard, MapPin, Users, Clock, ShieldCheck, Lock, Loader2
 } from 'lucide-react';
-import { httpsCallable } from 'firebase/functions';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
-import { functions } from '../../config/firebase';
-import { getOnboardedCustomers } from '../../services/userService';
+import { createUserByAdmin, getOnboardedCustomers } from '../../services/userService';
 import DataTable from '../shared/DataTable';
 import StatCard from '../shared/StatCard';
 import Modal from '../shared/Modal';
@@ -15,6 +13,9 @@ import LoadingSpinner from '../shared/LoadingSpinner';
 import { formatDate, timeAgo } from '../../utils/formatDate';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import { validators } from '../../utils/validation';
+import AutocompleteInput from '../shared/AutocompleteInput';
+import { INDIAN_STATES, MAJOR_INDIAN_CITIES } from '../../utils/indianAddressData';
+import { lookupPincode } from '../../utils/pincodeLookup';
 
 const KYC_COLORS = {
   verified:      { bg: 'rgba(16,185,129,0.15)', text: '#10b981' },
@@ -40,6 +41,39 @@ export default function AgentPortfolio() {
   const [viewCustomer, setViewCustomer] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
+  const [loadingPincode, setLoadingPincode] = useState(false);
+
+  useEffect(() => {
+    const pin = form.address.zip?.trim();
+    if (pin && /^\d{6}$/.test(pin)) {
+      let active = true;
+      async function triggerLookup() {
+        setLoadingPincode(true);
+        try {
+          const result = await lookupPincode(pin);
+          if (active && result) {
+            setForm(prev => ({
+              ...prev,
+              address: {
+                ...prev.address,
+                city: result.city || prev.address.city,
+                state: result.state || prev.address.state
+              }
+            }));
+            showToast('Address auto-filled from PIN code!', 'success');
+          }
+        } catch (err) {
+          console.error('Pincode lookup error:', err);
+        } finally {
+          if (active) setLoadingPincode(false);
+        }
+      }
+      triggerLookup();
+      return () => {
+        active = false;
+      };
+    }
+  }, [form.address.zip, showToast]);
 
   const load = useCallback(async () => {
     try {
@@ -68,32 +102,25 @@ export default function AgentPortfolio() {
         return;
       }
 
-      const emailErr = validators.optionalEmail(form.email);
-      if (emailErr) {
-        showToast(emailErr, 'error');
+      if (form.email.trim()) {
+        const emailErr = validators.optionalEmail(form.email);
+        if (emailErr) {
+          showToast(emailErr, 'error');
+          setSubmitting(false);
+          return;
+        }
+      }
+
+      const usernameErr = validators.username(form.username);
+      if (usernameErr) {
+        showToast(usernameErr, 'error');
         setSubmitting(false);
         return;
       }
 
-      const emailProvided = !!form.email.trim();
-      if (!emailProvided) {
-        const usernameErr = validators.username(form.username);
-        if (usernameErr) {
-          showToast(usernameErr, 'error');
-          setSubmitting(false);
-          return;
-        }
-      } else if (form.username.trim()) {
-        const usernameErr = validators.username(form.username);
-        if (usernameErr) {
-          showToast(usernameErr, 'error');
-          setSubmitting(false);
-          return;
-        }
-      }
-
-      if (!emailProvided && !form.phone.trim()) {
-        showToast('Phone number is required when email is blank', 'error');
+      const phoneRequiredErr = validators.required(form.phone, 'Phone number');
+      if (phoneRequiredErr) {
+        showToast(phoneRequiredErr, 'error');
         setSubmitting(false);
         return;
       }
@@ -132,7 +159,6 @@ export default function AgentPortfolio() {
         return;
       }
 
-      const createUserByAdmin = httpsCallable(functions, 'createUserByAdmin');
       await createUserByAdmin({
         email: form.email.trim() || undefined,
         displayName: form.displayName.trim(),
@@ -404,7 +430,7 @@ export default function AgentPortfolio() {
             </div>
             <div style={{ marginBottom: '0.75rem' }}>
               <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: 'var(--color-text-secondary)', marginBottom: '0.375rem' }}>
-                Username {form.email.trim() ? '(Optional)' : <span style={{ color: 'var(--color-danger)' }}>*</span>}
+                Username <span style={{ color: 'var(--color-danger)' }}>*</span>
               </label>
               <input
                 className="input"
@@ -427,7 +453,7 @@ export default function AgentPortfolio() {
               </div>
               <div>
                 <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: 'var(--color-text-secondary)', marginBottom: '0.375rem' }}>
-                  Phone {!form.email.trim() ? <span style={{ color: 'var(--color-danger)' }}>*</span> : '(Optional)'}
+                  Phone <span style={{ color: 'var(--color-danger)' }}>*</span>
                 </label>
                 <input
                   className="input" type="tel"
@@ -536,23 +562,41 @@ export default function AgentPortfolio() {
                 placeholder="123 Main Street"
               />
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '0.75rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '0.75rem', alignItems: 'start' }}>
               <div>
                 <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: 'var(--color-text-secondary)', marginBottom: '0.375rem' }}>City</label>
-                <input
-                  className="input"
-                  value={form.address.city}
-                  onChange={e => updateAddress('city', e.target.value)}
-                  placeholder="Mumbai"
-                />
+                <div style={{ position: 'relative' }}>
+                  <AutocompleteInput
+                    name="city"
+                    value={form.address.city}
+                    onChange={e => updateAddress('city', e.target.value)}
+                    suggestions={MAJOR_INDIAN_CITIES}
+                    placeholder="Mumbai"
+                    disabled={loadingPincode}
+                  />
+                  {loadingPincode && (
+                    <Loader2
+                      size={14}
+                      className="animate-spin"
+                      style={{
+                        position: 'absolute',
+                        right: '10px',
+                        top: '12px',
+                        color: 'var(--color-primary-500)',
+                      }}
+                    />
+                  )}
+                </div>
               </div>
               <div>
                 <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 500, color: 'var(--color-text-secondary)', marginBottom: '0.375rem' }}>State</label>
-                <input
-                  className="input"
+                <AutocompleteInput
+                  name="state"
                   value={form.address.state}
                   onChange={e => updateAddress('state', e.target.value)}
+                  suggestions={INDIAN_STATES}
                   placeholder="Maharashtra"
+                  disabled={loadingPincode}
                 />
               </div>
               <div>

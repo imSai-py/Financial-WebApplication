@@ -14,6 +14,9 @@ import { useIsMobile } from '../../hooks/useMediaQuery';
 import { validators } from '../../utils/validation';
 import DataTable from '../shared/DataTable';
 import { formatDate, formatDateTime, timeAgo } from '../../utils/formatDate';
+import { updateEmail, EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth';
+import Modal from '../shared/Modal';
+import PasswordField from '../shared/PasswordField';
 
 export default function SettingsPage() {
   const { userProfile, currentUser, isAdmin } = useAuth();
@@ -38,6 +41,10 @@ export default function SettingsPage() {
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [reauthOpen, setReauthOpen] = useState(false);
+  const [password, setPassword] = useState('');
+  const [reauthError, setReauthError] = useState(null);
+  const [reauthSaving, setReauthSaving] = useState(false);
 
   // System settings (admin only)
   const [sysSettings, setSysSettings] = useState(null);
@@ -148,11 +155,24 @@ export default function SettingsPage() {
     return Object.keys(nextErrors).length === 0;
   }
 
-  async function handleSubmit(e) {
-    e.preventDefault();
-    if (!validateProfileForm()) return;
+  async function saveProfileWithEmail(password = null) {
     setSaving(true);
+    setReauthSaving(true);
+    setReauthError(null);
+
     try {
+      if (password) {
+        const credential = EmailAuthProvider.credential(currentUser.email, password);
+        await reauthenticateWithCredential(currentUser, credential);
+      }
+
+      const newEmail = form.email.trim();
+      const currentEmail = (userProfile?.email || currentUser?.email || '').trim();
+      
+      if (newEmail && newEmail !== currentEmail) {
+        await updateEmail(currentUser, newEmail);
+      }
+
       const updateData = {
         displayName: form.displayName.trim(),
         phone: form.phone.trim(),
@@ -164,25 +184,90 @@ export default function SettingsPage() {
         },
       };
 
+      if (newEmail !== currentEmail) {
+        updateData.email = newEmail || null;
+      }
+
       await updateUser(currentUser.uid, updateData);
       await logActivity({
         userId: currentUser.uid,
         action: 'profile.update',
-        details: 'Updated personal profile details',
+        details: `Updated personal profile details${newEmail !== currentEmail ? ` and email to ${newEmail}` : ''}`,
         resourceType: 'user',
         resourceId: currentUser.uid,
       });
+
       setSaved(true);
       showToast('Profile updated successfully', 'success');
+      setReauthOpen(false);
+      setPassword('');
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
       console.error(err);
-      const message = err.code === 'permission-denied'
-        ? 'You can only update your own profile. Please sign in again if this account was recently changed.'
-        : err.message || 'Failed to update profile';
-      showToast(message, 'error');
+      if (err.code === 'auth/requires-recent-login') {
+        setReauthOpen(true);
+        showToast('For security, please confirm your password to update your email.', 'warning');
+      } else {
+        const message = err.code === 'permission-denied'
+          ? 'You can only update your own profile. Please sign in again.'
+          : err.message || 'Failed to update profile';
+        
+        if (reauthOpen) {
+          setReauthError(message);
+        } else {
+          showToast(message, 'error');
+        }
+      }
+    } finally {
+      setSaving(false);
+      setReauthSaving(false);
     }
-    setSaving(false);
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!validateProfileForm()) return;
+
+    const newEmail = form.email.trim();
+    const currentEmail = (userProfile?.email || currentUser?.email || '').trim();
+
+    if (newEmail !== currentEmail) {
+      await saveProfileWithEmail(null);
+    } else {
+      setSaving(true);
+      try {
+        const updateData = {
+          displayName: form.displayName.trim(),
+          phone: form.phone.trim(),
+          address: {
+            street: form.address.street.trim(),
+            city: form.address.city.trim(),
+            state: form.address.state.trim(),
+            zip: form.address.zip.trim(),
+          },
+        };
+
+        await updateUser(currentUser.uid, updateData);
+        await logActivity({
+          userId: currentUser.uid,
+          action: 'profile.update',
+          details: 'Updated personal profile details',
+          resourceType: 'user',
+          resourceId: currentUser.uid,
+        });
+        setSaved(true);
+        showToast('Profile updated successfully', 'success');
+        setTimeout(() => setSaved(false), 3000);
+      } catch (err) {
+        console.error(err);
+        const message = err.code === 'permission-denied'
+          ? 'You can only update your own profile. Please sign in again.'
+          : err.message || 'Failed to update profile';
+        showToast(message, 'error');
+      } finally {
+        setSaving(false);
+      }
+    }
   }
 
   async function handleSysSubmit(e) {
@@ -311,8 +396,8 @@ export default function SettingsPage() {
                 name="email"
                 type="email"
                 value={form.email}
-                readOnly
-                aria-readonly="true"
+                onChange={handleChange}
+                placeholder="email@example.com"
               />
               {errors.email && <p style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: 'var(--color-danger)' }}>{errors.email}</p>}
             </div>
@@ -577,6 +662,42 @@ export default function SettingsPage() {
                 </p>
               </div>
 
+              <div style={sectionStyle}>
+                <h3 style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                  <CreditCard size={14} /> Manual Funding Instructions
+                </h3>
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '0.75rem' }}>
+                  <div>
+                    <label style={labelStyle}>QR Code URL</label>
+                    <input className="input" name="paymentQrCodeUrl" value={sysSettings.paymentQrCodeUrl || ''} onChange={handleSysChange} placeholder="https://..." />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>UPI ID</label>
+                    <input className="input" name="paymentUpiId" value={sysSettings.paymentUpiId || ''} onChange={handleSysChange} placeholder="financeflow@upi" />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Account Holder Name</label>
+                    <input className="input" name="paymentAccountHolderName" value={sysSettings.paymentAccountHolderName || ''} onChange={handleSysChange} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Bank Account Number</label>
+                    <input className="input" name="paymentBankAccountNumber" value={sysSettings.paymentBankAccountNumber || ''} onChange={handleSysChange} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>IFSC Code</label>
+                    <input className="input" name="paymentIfscCode" value={sysSettings.paymentIfscCode || ''} onChange={handleSysChange} style={{ textTransform: 'uppercase' }} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Overpayment Handling</label>
+                    <select className="input" name="overpaymentMode" value={sysSettings.overpaymentMode || 'reject_entire_request'} onChange={handleSysChange}>
+                      <option value="reject_entire_request">Reject Entire Request</option>
+                      <option value="accept_only_remaining_amount">Accept Only Remaining Amount</option>
+                      <option value="accept_full_amount_store_credit">Accept Full Amount And Store Credit</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
               {/* Operational Guardrails Section */}
               <div style={{ marginBottom: '1.5rem' }}>
                 <h3 style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
@@ -628,6 +749,35 @@ export default function SettingsPage() {
           ) : null}
         </div>
       )}
+
+      {/* Re-Authentication Modal */}
+      <Modal isOpen={reauthOpen} onClose={() => { setReauthOpen(false); setPassword(''); setReauthError(null); }} title="Confirm Password" maxWidth={400}>
+        <form onSubmit={(e) => { e.preventDefault(); saveProfileWithEmail(password); }}>
+          <p style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', marginBottom: '1.25rem', lineHeight: 1.5 }}>
+            For security, please enter your current account password to confirm your new email address.
+          </p>
+
+          <div style={{ marginBottom: '1.25rem' }}>
+            <label style={labelStyle}>Current Password</label>
+            <PasswordField
+              name="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Enter your current password"
+            />
+            {reauthError && <p style={{ fontSize: '0.75rem', color: 'var(--color-danger)', marginTop: '0.375rem' }}>{reauthError}</p>}
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+            <button type="button" className="btn btn-ghost" onClick={() => { setReauthOpen(false); setPassword(''); setReauthError(null); }} disabled={reauthSaving}>
+              Cancel
+            </button>
+            <button type="submit" className="btn btn-primary" disabled={reauthSaving || !password.trim()}>
+              {reauthSaving ? 'Confirming...' : 'Confirm'}
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

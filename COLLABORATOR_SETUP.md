@@ -97,9 +97,9 @@ VITE_FIREBASE_FUNCTIONS_EMULATOR_PORT=5001
 
 Important:
 
-- The Firebase web app config is currently hardcoded in `src/config/firebase.js`.
-- If you are using the same shared Firebase project as the rest of the team, do not change that file.
-- If you are using a different Firebase project, the Firebase config and some scripts must be updated.
+- The Firebase web app config is provided via `VITE_FIREBASE_*` environment variables.
+- If you are using the same shared Firebase project as the rest of the team, keep those values aligned with the shared project.
+- If you are using a different Firebase project, update your environment values and any project-specific scripts accordingly.
 
 ## 5. Firebase Project Setup
 

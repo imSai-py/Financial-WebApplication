@@ -122,21 +122,6 @@ test.describe('Criterion 1: Auth & Routing', () => {
     await expect(page).toHaveURL(/.*\/login/);
   });
 
-  test('AUTH-04D: Main login links to dedicated customer login page', async ({ page }) => {
-    await page.goto('/login');
-    await expect(page.locator('#customer-login-link')).toBeVisible();
-    await page.click('#customer-login-link');
-    await page.waitForURL('**/customer-login', { timeout: 10000 });
-    await expect(page.locator('text=Customer login')).toBeVisible();
-  });
-
-  test('AUTH-04E: Dedicated customer login rejects non-customer accounts', async ({ page }) => {
-    await loginAs(page, USERS.admin.email, USERS.admin.password, '/customer-login');
-
-    await page.waitForTimeout(1500);
-    await expect(page).toHaveURL(/.*\/customer-login/);
-    await expect(page.locator('text=This customer login is only for customer accounts.')).toBeVisible();
-  });
 
   test('AUTH-05: Unauthenticated user is redirected to /login', async ({ page }) => {
     await page.goto('/dashboard');

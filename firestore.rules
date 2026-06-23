@@ -43,6 +43,13 @@ service cloud.firestore {
         );
     }
 
+    function isStaffManagedInvestment(data) {
+      return isStaff() && (
+        data.assignedStaffId == request.auth.uid
+        || data.createdById == request.auth.uid
+      );
+    }
+
     // Suspended user gate — blocks ALL operations for suspended/deactivated users
     function isActiveUser() {
       return getUserStatus() == 'active';
@@ -401,6 +408,61 @@ service cloud.firestore {
     // ═══════════════════════════════════════════════════════
     // Used by Firebase "Trigger Email" extension.
     // Documents here trigger automated email sends.
+    match /investmentPlans/{planId} {
+      allow read: if isAuthorized();
+      allow create, update: if isAuthorized() && isAdmin();
+      allow delete: if false;
+    }
+
+    match /investments/{investmentId} {
+      allow read: if isAuthorized() && (
+        isAdmin()
+        || isStaffManagedInvestment(resource.data)
+        || (isAgent() && resource.data.assignedAgentId == request.auth.uid)
+        || (isCustomer() && resource.data.customerId == request.auth.uid)
+      );
+      allow create, update, delete: if false;
+    }
+
+    match /investmentFundingRequests/{requestId} {
+      allow read: if isAuthorized() && (
+        isAdmin()
+        || (isStaff() && (
+          resource.data.assignedStaffId == request.auth.uid
+          || resource.data.collectedByStaffId == request.auth.uid
+          || resource.data.submittedById == request.auth.uid
+        ))
+        || (isCustomer() && resource.data.customerId == request.auth.uid)
+      );
+      allow create, update, delete: if false;
+    }
+
+    match /investmentPayouts/{payoutId} {
+      allow read: if isAuthorized() && (
+        isAdmin()
+        || (isCustomer() && resource.data.customerId == request.auth.uid)
+      );
+      allow create, update, delete: if false;
+    }
+
+    match /investmentCredits/{creditId} {
+      allow read: if isAuthorized() && (
+        isAdmin()
+        || (isCustomer() && resource.data.customerId == request.auth.uid)
+      );
+      allow create, update, delete: if false;
+    }
+
+    match /referralCommissions/{commissionId} {
+      allow read: if isAuthorized() && (
+        isAdmin()
+        || resource.data.customerId == request.auth.uid
+        || resource.data.referrerId == request.auth.uid
+        || resource.data.referredCustomerId == request.auth.uid
+      );
+      allow create, update, delete: if false;
+    }
+
     match /mail/{mailId} {
       // No one reads mail queue from client
       allow read: if false;

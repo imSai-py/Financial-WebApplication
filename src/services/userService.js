@@ -3,11 +3,105 @@ import {
   query, where, orderBy, serverTimestamp 
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
-import { db, functions } from '../config/firebase';
+import { auth, db, functions } from '../config/firebase';
 import { filterCustomerForAgent } from '../utils/rolePermissions';
 
 const COLLECTION = 'users';
 const col = collection(db, COLLECTION);
+const CALLABLE_FALLBACK_CODES = new Set(['functions/internal', 'functions/unknown']);
+
+function normalizeCallableCode(code) {
+  if (typeof code !== 'string' || !code.trim()) return '';
+  const trimmed = code.trim();
+  return trimmed.startsWith('functions/') ? trimmed : `functions/${trimmed}`;
+}
+
+function shouldRetryCallableWithHttp(error) {
+  const normalizedCode = normalizeCallableCode(error?.code);
+  const normalizedMessage = typeof error?.message === 'string'
+    ? error.message.trim().toLowerCase()
+    : '';
+
+  return CALLABLE_FALLBACK_CODES.has(normalizedCode)
+    || normalizedMessage === 'internal'
+    || normalizedMessage === 'unknown'
+    || normalizedMessage === 'failed to fetch';
+}
+
+function buildFunctionHttpEndpoint(name) {
+  if (name === 'createUserByAdminHttp' && typeof window !== 'undefined') {
+    return '/api/createUserByAdmin';
+  }
+
+  const projectId = functions.app.options.projectId;
+  const region = functions.region || 'us-central1';
+  return `https://${region}-${projectId}.cloudfunctions.net/${name}`;
+}
+
+function buildCallableError(errorPayload = {}) {
+  const status = typeof errorPayload.status === 'string' ? errorPayload.status.toLowerCase() : 'internal';
+  const message = errorPayload.message || status || 'Callable request failed.';
+  const error = new Error(message);
+  error.code = `functions/${status}`;
+  error.details = errorPayload.details;
+  error.name = 'FirebaseError';
+  return error;
+}
+
+async function invokeCallableWithHttpFallback(name, payload) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw buildCallableError({
+      status: 'unauthenticated',
+      message: 'Authentication required.',
+    });
+  }
+
+  const idToken = await currentUser.getIdToken(true);
+  const endpointName = name === 'createUserByAdmin' ? 'createUserByAdminHttp' : name;
+
+  console.info(`[Firebase] Retrying ${name} via HTTP fallback endpoint ${endpointName}.`);
+
+  const response = await fetch(buildFunctionHttpEndpoint(endpointName), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ data: payload }),
+  });
+
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.error) {
+    throw buildCallableError(body.error || {
+      status: 'internal',
+      message: 'Callable request failed before a response was received.',
+    });
+  }
+
+  return body.result;
+}
+
+async function invokeCallable(name, payload) {
+  const callable = httpsCallable(functions, name);
+
+  try {
+    const result = await callable(payload);
+    return result.data;
+  } catch (error) {
+    console.error(`[Firebase] Callable ${name} failed.`, {
+      code: error?.code || null,
+      message: error?.message || String(error),
+      details: error?.details || null,
+    });
+
+    if (!shouldRetryCallableWithHttp(error)) {
+      throw error;
+    }
+
+    return invokeCallableWithHttpFallback(name, payload);
+  }
+}
 
 function toMillis(timestamp) {
   if (!timestamp) return 0;
@@ -348,6 +442,18 @@ export async function updateUser(id, data) {
   await updateUserProfile({
     targetUid: id,
     updates: data,
+  });
+}
+
+export async function createUserByAdmin(payload) {
+  return invokeCallable('createUserByAdmin', payload);
+}
+
+export async function setManagedUserPassword(targetUid, newPassword) {
+  const setManagedPassword = httpsCallable(functions, 'setManagedUserPassword');
+  await setManagedPassword({
+    targetUid,
+    newPassword,
   });
 }
 

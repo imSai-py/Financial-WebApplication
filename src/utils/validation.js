@@ -4,20 +4,59 @@
  */
 
 export const validators = {
+  /** Helper to validate email format and check for misspelled domains */
+  _validateEmail(value, isRequired = false) {
+    if (!value || !value.trim()) {
+      return isRequired ? 'Email is required' : null;
+    }
+    const trimmed = value.trim();
+    const parts = trimmed.split('@');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      return 'Invalid email format';
+    }
+    const domainPart = parts[1].toLowerCase();
+    if (!domainPart.includes('.')) {
+      return 'Invalid email domain. Missing top-level domain (e.g., .com)';
+    }
+    const domainParts = domainPart.split('.');
+    const tld = domainParts[domainParts.length - 1];
+    if (tld.length < 2) {
+      return 'Invalid email domain format';
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmed)) {
+      return 'Invalid email format';
+    }
+
+    const typoDomains = {
+      'gmal.com': 'gmail.com',
+      'gamil.com': 'gmail.com',
+      'gmial.com': 'gmail.com',
+      'gmaill.com': 'gmail.com',
+      'gml.com': 'gmail.com',
+      'outlok.com': 'outlook.com',
+      'outllok.com': 'outlook.com',
+      'otlook.com': 'outlook.com',
+      'hotmal.com': 'hotmail.com',
+      'hotmial.com': 'hotmail.com',
+      'yaho.com': 'yahoo.com',
+      'yahooo.com': 'yahoo.com',
+    };
+
+    if (typoDomains[domainPart]) {
+      return `Misspelled email domain. Did you mean ${typoDomains[domainPart]}?`;
+    }
+    return null;
+  },
+
   /** Email validation */
   email(value) {
-    if (!value || !value.trim()) return 'Email is required';
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(value.trim())) return 'Invalid email format';
-    return null;
+    return this._validateEmail(value, true);
   },
 
   /** Optional email validation */
   optionalEmail(value) {
-    if (!value || !value.trim()) return null;
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(value.trim())) return 'Invalid email format';
-    return null;
+    return this._validateEmail(value, false);
   },
 
   /** Phone validation (Indian format) */

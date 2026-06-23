@@ -5,7 +5,9 @@ import { getFirestore } from 'firebase-admin/firestore';
 process.env.FIREBASE_AUTH_EMULATOR_HOST = 'localhost:9099';
 process.env.FIRESTORE_EMULATOR_HOST = 'localhost:8081';
 
-const app = initializeApp({ projectId: 'financeflow-mgmt-2026' });
+const projectId = process.env.FIREBASE_PROJECT_ID || 'finance-flow-825fd';
+
+const app = initializeApp({ projectId });
 const auth = getAuth(app);
 const db = getFirestore(app);
 
@@ -14,7 +16,7 @@ async function seedAdmins() {
     const listUsersResult = await auth.listUsers(1000);
     const users = listUsersResult.users;
     
-    console.log(`Found ${users.length} users in Firebase Auth emulator.`);
+    console.log(`Found ${users.length} users in Firebase Auth emulator for project ${projectId}.`);
     
     for (const u of users) {
       console.log(`Seeding Firestore for user ${u.email} (${u.uid})...`);

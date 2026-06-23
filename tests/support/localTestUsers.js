@@ -18,18 +18,18 @@ const LOCAL_USERS = {
 
 const SHARED_USERS = {
   admin: {
-    email: 'admin@financeflow.com',
-    password: 'Admin@123',
+    email: 'admin.test@financeflow.app',
+    password: 'Admin@Test123',
     role: 'admin',
   },
   staff: {
-    email: 'staff@financeflow.com',
-    password: 'Staff@123',
+    email: 'staff.test@financeflow.app',
+    password: 'Staff@Test123',
     role: 'staff',
   },
   agent: {
-    email: 'agent@financeflow.com',
-    password: 'Agent@123',
+    email: 'agent.test@financeflow.app',
+    password: 'Agent@Test123',
     role: 'agent',
   },
 };

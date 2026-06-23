@@ -2,20 +2,30 @@ import { initializeApp } from 'firebase/app';
 import { connectAuthEmulator, getAuth } from 'firebase/auth';
 import { connectFirestoreEmulator, getFirestore } from 'firebase/firestore';
 import { connectFunctionsEmulator, getFunctions } from 'firebase/functions';
+import { connectStorageEmulator, getStorage } from 'firebase/storage';
+
+function readRequiredFirebaseEnv(name) {
+  const value = import.meta.env[name];
+  if (!value) {
+    throw new Error(`Missing required Firebase environment variable: ${name}`);
+  }
+  return value;
+}
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCjI-i8zjrz8Be6cowhvI1NgwYemH-EzDQ",
-  authDomain: "financeflow-mgmt-2026.firebaseapp.com",
-  projectId: "financeflow-mgmt-2026",
-  storageBucket: "financeflow-mgmt-2026.firebasestorage.app",
-  messagingSenderId: "1085477669742",
-  appId: "1:1085477669742:web:c941831c4049e8f42b8f7f"
+  apiKey: readRequiredFirebaseEnv('VITE_FIREBASE_API_KEY'),
+  authDomain: readRequiredFirebaseEnv('VITE_FIREBASE_AUTH_DOMAIN'),
+  projectId: readRequiredFirebaseEnv('VITE_FIREBASE_PROJECT_ID'),
+  storageBucket: readRequiredFirebaseEnv('VITE_FIREBASE_STORAGE_BUCKET'),
+  messagingSenderId: readRequiredFirebaseEnv('VITE_FIREBASE_MESSAGING_SENDER_ID'),
+  appId: readRequiredFirebaseEnv('VITE_FIREBASE_APP_ID'),
 };
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 export const functions = getFunctions(app, 'us-central1');
+export const storage = getStorage(app);
 
 const shouldUseEmulators = import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true';
 const isLocalhost =
@@ -27,10 +37,12 @@ if (shouldUseEmulators) {
   const authPort = Number(import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_PORT || 9099);
   const firestorePort = Number(import.meta.env.VITE_FIREBASE_FIRESTORE_EMULATOR_PORT || 8081);
   const functionsPort = Number(import.meta.env.VITE_FIREBASE_FUNCTIONS_EMULATOR_PORT || 5001);
+  const storagePort = Number(import.meta.env.VITE_FIREBASE_STORAGE_EMULATOR_PORT || 9199);
 
   connectAuthEmulator(auth, `http://${emulatorHost}:${authPort}`, { disableWarnings: true });
   connectFirestoreEmulator(db, emulatorHost, firestorePort);
   connectFunctionsEmulator(functions, emulatorHost, functionsPort);
+  connectStorageEmulator(storage, emulatorHost, storagePort);
 
   if (import.meta.env.DEV) {
     console.info(

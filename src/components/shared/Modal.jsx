@@ -12,7 +12,6 @@ export default function Modal({ isOpen, onClose, title, children, maxWidth = 520
 
   return createPortal(
     <div
-      onClick={onClose}
       style={{
         position: 'fixed', inset: 0, zIndex: 100,
         background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',

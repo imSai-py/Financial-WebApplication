@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { IndianRupee, ArrowDownLeft, ArrowUpRight, Clock, Send, Landmark, ArrowRight, CreditCard, TrendingUp } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { getTransactionsByCustomer, getCustomerBalance } from '../../services/transactionService';
-import { getActiveLoans } from '../../services/loanService';
+import { getInvestmentsByCustomer } from '../../services/investmentService';
 import StatCard from '../shared/StatCard';
 import StatusBadge from '../shared/StatusBadge';
 import LoadingSpinner from '../shared/LoadingSpinner';
@@ -17,30 +18,30 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
  * 
  * Capabilities:
  *   1. Profile greeting + balance overview
- *   2. Quick Actions bar (Pay, Transfer, View Loans)
- *   3. Active loans summary with progress
+ *   2. Quick Actions bar (Pay, Transfer, Investments)
+ *   3. Active investments summary with funding progress
  *   4. Monthly activity chart
  *   5. Recent transaction feed
  */
 export default function CustomerDashboard() {
   const { userProfile } = useAuth();
   const [transactions, setTransactions] = useState([]);
-  const [activeLoans, setActiveLoans] = useState([]);
+  const [activeInvestments, setActiveInvestments] = useState([]);
   const [balance, setBalance] = useState(0);
   const [loading, setLoading] = useState(true);
   const [showPayment, setShowPayment] = useState(false);
-  const [paymentType, setPaymentType] = useState('payment');
+  const navigate = useNavigate();
   const isMobile = useIsMobile();
 
   async function loadData() {
     try {
-      const [txs, loans, bal] = await Promise.all([
+      const [txs, investments, bal] = await Promise.all([
         getTransactionsByCustomer(userProfile.uid),
-        getActiveLoans(userProfile.uid),
+        getInvestmentsByCustomer(userProfile.uid),
         getCustomerBalance(userProfile.uid),
       ]);
       setTransactions(txs);
-      setActiveLoans(loans);
+      setActiveInvestments(investments.filter((item) => item.lifecycleStatus !== 'closed'));
       setBalance(bal);
     } catch (err) {
       console.error('Customer dashboard error:', err);
@@ -57,8 +58,7 @@ export default function CustomerDashboard() {
     loadData();
   }
 
-  function openPayment(type) {
-    setPaymentType(type);
+  function openPayment() {
     setShowPayment(true);
   }
 
@@ -129,8 +129,8 @@ export default function CustomerDashboard() {
           {[
             { label: 'Pay', icon: CreditCard, color: '#6366f1', bg: 'rgba(99,102,241,0.1)', action: () => openPayment('payment') },
             { label: 'Transfer', icon: Send, color: '#8b5cf6', bg: 'rgba(139,92,246,0.1)', action: () => openPayment('transfer') },
-            { label: 'My Loans', icon: Landmark, color: '#f59e0b', bg: 'rgba(245,158,11,0.1)', action: () => window.location.href = '/loans' },
-            { label: 'History', icon: TrendingUp, color: '#22c55e', bg: 'rgba(34,197,94,0.1)', action: () => window.location.href = '/transactions' },
+            { label: 'Investments', icon: Landmark, color: '#f59e0b', bg: 'rgba(245,158,11,0.1)', action: () => navigate('/investments') },
+            { label: 'History', icon: TrendingUp, color: '#22c55e', bg: 'rgba(34,197,94,0.1)', action: () => navigate('/transactions') },
           ].map(item => (
             <button
               key={item.label}
@@ -152,30 +152,31 @@ export default function CustomerDashboard() {
         </div>
       </div>
 
-      {/* Active Loans Summary */}
-      {activeLoans.length > 0 && (
+      {/* Active Investments Summary */}
+      {activeInvestments.length > 0 && (
         <div className="glass-card" style={{ padding: isMobile ? '1rem' : '1.25rem', marginBottom: isMobile ? '1rem' : '1.5rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.875rem' }}>
             <h3 style={{ fontSize: '0.9375rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
-              <Landmark size={18} /> Active Loans
+              <Landmark size={18} /> Active Investments
             </h3>
-            <a href="/loans" style={{ fontSize: '0.75rem', color: 'var(--color-primary-400)', display: 'flex', alignItems: 'center', gap: '0.25rem', textDecoration: 'none' }}>
+            <a href="/investments" style={{ fontSize: '0.75rem', color: 'var(--color-primary-400)', display: 'flex', alignItems: 'center', gap: '0.25rem', textDecoration: 'none' }}>
               View All <ArrowRight size={14} />
             </a>
           </div>
-          {activeLoans.slice(0, 3).map(loan => {
-            const progress = loan.totalPayable ? Math.min(100, Math.round((loan.totalPaid || 0) / loan.totalPayable * 100)) : 0;
+          {activeInvestments.slice(0, 3).map(investment => {
+            const required = investment.requiredAmount || investment.planSnapshot?.requiredAmount || 0;
+            const progress = required ? Math.min(100, Math.round((investment.fundedAmount || 0) / required * 100)) : 0;
             return (
-              <div key={loan.id} style={{
+              <div key={investment.id} style={{
                 padding: '0.75rem', borderRadius: 10, marginBottom: '0.5rem',
                 background: 'rgba(148,163,184,0.03)', border: '1px solid var(--color-border)',
               }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
                   <span style={{ fontSize: '0.8125rem', fontWeight: 600, textTransform: 'capitalize' }}>
-                    {loan.loanType || 'Personal'} Loan
+                    {investment.planSnapshot?.planName || 'Investment Plan'}
                   </span>
                   <span style={{ fontSize: '0.8125rem', fontWeight: 700 }}>
-                    {formatAmount(loan.emiAmount || 0)}/mo
+                    {formatAmount(investment.planSnapshot?.monthlyReturn || 0)}/mo
                   </span>
                 </div>
                 <div style={{ width: '100%', height: 6, borderRadius: 3, background: 'rgba(148,163,184,0.1)', overflow: 'hidden' }}>
@@ -187,7 +188,7 @@ export default function CustomerDashboard() {
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.25rem' }}>
                   <span style={{ fontSize: '0.625rem', color: 'var(--color-text-muted)' }}>
-                    {formatAmount(loan.totalPaid || 0)} paid
+                    {formatAmount(investment.fundedAmount || 0)} funded
                   </span>
                   <span style={{ fontSize: '0.625rem', color: 'var(--color-text-muted)' }}>
                     {progress}%

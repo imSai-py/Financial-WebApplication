@@ -16,8 +16,8 @@ import CommissionList from './components/commissions/CommissionList';
 import SettingsPage from './components/settings/SettingsPage';
 import ActivityLogPage from './components/activity/ActivityLogPage';
 import ReportsPage from './components/reports/ReportsPage';
-import LoanStatus from './components/loans/LoanStatus';
 import AgentPortfolio from './components/customers/AgentPortfolio';
+import InvestmentHub from './components/investments/InvestmentHub';
 
 function App() {
   return (
@@ -29,10 +29,7 @@ function App() {
           <Routes>
             {/* Public-only routes — redirect authenticated users to /dashboard */}
             <Route path="/login" element={
-              <PublicOnlyRoute><LoginForm key="general-login" mode="general" /></PublicOnlyRoute>
-            } />
-            <Route path="/customer-login" element={
-              <PublicOnlyRoute><LoginForm key="customer-login" mode="customer" /></PublicOnlyRoute>
+              <PublicOnlyRoute><LoginForm /></PublicOnlyRoute>
             } />
             <Route path="/register" element={<Navigate to="/login" replace />} />
             <Route path="/forgot-password" element={<Navigate to="/login" replace />} />
@@ -61,9 +58,10 @@ function App() {
                 </ProtectedRoute>
               } />
               <Route path="transactions" element={<TransactionList />} />
+              <Route path="investments" element={<InvestmentHub />} />
               <Route path="loans" element={
                 <ProtectedRoute allowedRoles={['customer']}>
-                  <LoanStatus />
+                  <InvestmentHub />
                 </ProtectedRoute>
               } />
               <Route path="tasks" element={

@@ -1,0 +1,32 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserRole() {
+      return request.auth.token.role;
+    }
+
+    function isAdmin() {
+      return getUserRole() == 'admin';
+    }
+
+    function isStaff() {
+      return getUserRole() == 'staff';
+    }
+
+    match /fundingReceipts/{userId}/{fileName} {
+      allow read: if isAuthenticated() && (
+        isAdmin()
+        || isStaff()
+        || request.auth.uid == userId
+      );
+      allow write: if isAuthenticated()
+        && request.auth.uid == userId
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*|application/pdf');
+    }
+  }
+}

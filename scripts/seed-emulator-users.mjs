@@ -5,7 +5,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 process.env.FIREBASE_AUTH_EMULATOR_HOST = process.env.FIREBASE_AUTH_EMULATOR_HOST || '127.0.0.1:9099';
 process.env.FIRESTORE_EMULATOR_HOST = process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8081';
 
-const projectId = 'financeflow-mgmt-2026';
+const projectId = 'financeflow-e3c5d';
 const app = initializeApp({ projectId });
 const auth = getAuth(app);
 const db = getFirestore(app);

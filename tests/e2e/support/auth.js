@@ -24,7 +24,11 @@ export async function logout(page) {
   const signOutBtn = page.getByRole('button', { name: /sign out/i });
   if (await signOutBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
     await signOutBtn.click();
-    await page.waitForURL('**/login', { timeout: 10000 });
+    const confirmBtn = page.locator('.btn-danger', { hasText: /^sign out$/i });
+    if (await confirmBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await confirmBtn.click();
+    }
+    await page.waitForURL('**/login', { timeout: 15000 });
   }
 }
 

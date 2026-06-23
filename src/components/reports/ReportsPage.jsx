@@ -24,6 +24,7 @@ function formatCurrency(amount) {
 }
 
 function ReportStatCard({ icon: Icon, label, value, subtext, color, trend }) {
+  const renderedIcon = <Icon size={20} color={color} />;
   return (
     <div className="glass-card" style={{
       padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem',
@@ -33,7 +34,7 @@ function ReportStatCard({ icon: Icon, label, value, subtext, color, trend }) {
           width: 40, height: 40, borderRadius: 'var(--radius-md)',
           background: `${color}15`, display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
-          <Icon size={20} color={color} />
+          {renderedIcon}
         </div>
         {trend && (
           <div style={{
